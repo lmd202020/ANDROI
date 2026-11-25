@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- Mạng -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!-- Shizuku API permission; runtime approval is requested from Shizuku Manager. -->
+    <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
+
+    <!-- Overlay (tâm ảo) -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
+    <!-- Foreground Service (bắt buộc từ Android 8+) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+
+    <!-- Android 14+ yêu cầu khai báo loại foreground service.
+         specialUse là loại phù hợp cho overlay/toolkit không thuộc nhóm media/location/dataSync. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"
+        tools:targetApi="34" />
+
+    <!-- (Tuỳ chọn) Giữ CPU hoạt động khi overlay đang chạy -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- Khai báo package cần truy vấn (Android 11+ package visibility) -->
+    <queries>
+        <package android:name="com.dts.freefireth" />
+        <package android:name="com.garena.ffvn" />
+        <package android:name="moe.shizuku.privileged.api" />
+        <!-- Cho phép thấy mọi app có launcher (dùng queryIntentActivities trong code) -->
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+
+    <application
+        android:allowBackup="false"
+        android:label="MINHDUC ANDROID ELITE"
+        android:icon="@mipmap/ic_launcher"
+        android:supportsRtl="true"
+        android:theme="@android:style/Theme.Material.NoActionBar">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Shizuku bridge provider. Required for the app to receive Shizuku Binder. -->
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:multiprocess="false"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+
+        <!-- 1. Overlay service (Tâm ảo) -->
+        <service
+            android:name=".CrosshairOverlayService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse"
+            tools:targetApi="34">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Overlay crosshair utility for on-screen aiming aid, no game modification" />
+        </service>
+
+
+    </application>
+</manifest>
