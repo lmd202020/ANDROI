@@ -1,0 +1,11 @@
+<resources>
+    <string name="a11y_desc">MINHDUC Touch Filter - ổn định cảm ứng chạm và boost sampling cho game.</string>
+
+    <style name="AppTheme" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:colorAccent">#46DDF4</item>
+        <item name="android:statusBarColor">#080D14</item>
+        <item name="android:navigationBarColor">#080D14</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>
