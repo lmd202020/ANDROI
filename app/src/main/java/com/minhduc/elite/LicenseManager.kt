@@ -22,7 +22,7 @@ import java.util.TimeZone
 class LicenseManager(private val context: Context) {
     companion object {
         // Replace this placeholder with a NEW GitHub token. Do not reuse a leaked token.
-        private const val GITHUB_TOKEN = "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"
+        private const val GITHUB_TOKEN = "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"
         private const val OWNER = "lmd140809"
         private const val REPO = "MinhDux"
         private const val BRANCH = "main"
