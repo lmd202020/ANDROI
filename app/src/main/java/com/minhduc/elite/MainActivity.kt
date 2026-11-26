@@ -34,6 +34,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import rikka.shizuku.Shizuku
+import rikka.shizuku.ShizukuRemoteProcess
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -80,7 +81,7 @@ object GameDataPaths {
 }
 
 // ============================================================
-// FILE INSTALLER LOGIC (CHỈ DÙNG SHIZUKU)
+// FILE INSTALLER LOGIC (DÙNG REFLECTION CHO SHIZUKU 13+)
 // ============================================================
 object FileInstaller {
     const val ASSETS_BUNDLES_DIR = "game_payload/file/contentcache/Optional/android/gameassetbundles"
@@ -109,17 +110,28 @@ object FileInstaller {
             var successCount = 0
             var errorCount = 0
 
+            // Dùng Reflection để gọi hàm newProcess bị ẩn trong Shizuku 13+
+            val clazz = Class.forName("rikka.shizuku.Shizuku")
+            val method = clazz.getDeclaredMethod(
+                "newProcess",
+                Array<String>::class.java,
+                Array<String>::class.java,
+                String::class.java
+            )
+            method.isAccessible = true
+
             for (fileName in filesToCopy) {
-                // 1. Ghi file từ Assets ra Cache của App trước
+                // 1. Ghi file từ Assets ra Cache
                 val tempFile = File(context.cacheDir, fileName)
                 context.assets.open("$ASSETS_BUNDLES_DIR/$fileName").use { input ->
                     tempFile.outputStream().use { output -> input.copyTo(output) }
                 }
 
-                // 2. Dùng Shizuku chạy lệnh copy
-                val cmd = "mkdir -p $destDir && cp -f ${tempFile.absolutePath} $destDir"
-                val process = Shizuku.newProcess(arrayOf("sh", "-c", cmd), null, null)
-                val exitCode = process.waitFor()
+                // 2. Dùng Shizuku copy (mkdir -p tạo thư mục nếu chưa có, cp -f ghi đè)
+                val cmd = arrayOf("sh", "-c", "mkdir -p $destDir && cp -f ${tempFile.absolutePath} $destDir")
+                
+                val remoteProcess = method.invoke(null, cmd, null, null) as ShizukuRemoteProcess
+                val exitCode = remoteProcess.waitFor()
                 
                 tempFile.delete()
 
@@ -425,7 +437,6 @@ private fun GameManager(apps: List<InstalledApp>, launchApp: (String) -> Unit) {
             }
             Heading("ONE-TAP FILE INSTALLER", label, "Áp dụng bộ file đã đóng gói vào dữ liệu game")
             
-            // HIỂN THỊ PANEL CÀI ĐẶT (ĐÃ CÓ NÚT VÀO GAME + ÁP DỤNG + SHIZUKU)
             GameAssetInstallerPanel(
                 packageName = pkg, 
                 gameLabel = label, 
@@ -473,7 +484,7 @@ private fun GameTargetCard(
 }
 
 // ============================================================
-// GAME ASSET INSTALLER PANEL (TÍCH HỢP NÚT VÀO GAME + ÁP DỤNG + SHIZUKU)
+// GAME ASSET INSTALLER PANEL
 // ============================================================
 @Composable
 fun GameAssetInstallerPanel(
@@ -534,7 +545,6 @@ fun GameAssetInstallerPanel(
 
         HorizontalDivider(color = Color(0xFF263A4D), modifier = Modifier.padding(vertical = 4.dp))
 
-        // DANH SÁCH FILE
         Text("Phát hiện ${localAssets.size} file trong App:", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
         if (localAssets.isEmpty()) {
             Text("Không tìm thấy file nào.", color = Color(0xFFFF7777), fontSize = 11.sp)
@@ -546,7 +556,7 @@ fun GameAssetInstallerPanel(
 
         Spacer(Modifier.height(8.dp))
 
-        // 1. NÚT VÀO GAME
+        // NÚT VÀO GAME
         if (isGameInstalled) {
             Button(
                 onClick = onLaunchGame,
@@ -565,7 +575,7 @@ fun GameAssetInstallerPanel(
             }
         }
 
-        // 2. NÚT KẾT NỐI SHIZUKU
+        // NÚT KẾT NỐI SHIZUKU
         if (!shizukuReady) {
             Button(
                 onClick = {
@@ -600,7 +610,7 @@ fun GameAssetInstallerPanel(
             }
         }
 
-        // 3. NÚT ÁP DỤNG FILE
+        // NÚT ÁP DỤNG FILE
         Button(
             onClick = {
                 isInstalling = true
