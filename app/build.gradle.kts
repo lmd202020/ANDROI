@@ -81,6 +81,9 @@ dependencies {
     // Shizuku API: privileged operations through the user-approved Shizuku service.
     implementation("dev.rikka.shizuku:api:13.1.5")
     implementation("dev.rikka.shizuku:provider:13.1.5")
+    
+    // THÊM DÒNG NÀY ĐỂ NÚT ÁP DỤNG FILE HOẠT ĐỘNG
+    implementation("androidx.documentfile:documentfile:1.0.1")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
