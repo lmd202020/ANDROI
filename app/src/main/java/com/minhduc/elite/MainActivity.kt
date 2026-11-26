@@ -19,7 +19,6 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -31,24 +30,20 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.documentfile.provider.DocumentFile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import rikka.shizuku.Shizuku
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import java.io.InputStream
+import java.io.File
 import java.util.Locale
 
 // ============================================================
@@ -60,6 +55,7 @@ private val Panel2 = Color(0xFF172536)
 private val Cyan = Color(0xFF46DDF4)
 private val Muted = Color(0xFF9AAABD)
 private val Green = Color(0xFF43D99B)
+private val Orange = Color(0xFFFFB45E)
 
 data class InstalledApp(val label: String, val pkg: String)
 
@@ -78,13 +74,15 @@ object GameDataPaths {
 
     fun contentCachePath(packageName: String): String =
         gameFilesPath(packageName) + "contentcache/"
+        
+    fun targetBundlePath(packageName: String): String =
+        contentCachePath(packageName) + "Optional/android/gameassetbundles/"
 }
 
 // ============================================================
-// FILE INSTALLER LOGIC
+// FILE INSTALLER LOGIC (CHỈ DÙNG SHIZUKU)
 // ============================================================
 object FileInstaller {
-    // Đường dẫn chuẩn xác dựa trên hình ảnh bạn cung cấp
     const val ASSETS_BUNDLES_DIR = "game_payload/file/contentcache/Optional/android/gameassetbundles"
 
     fun getLocalAssets(context: Context): List<String> {
@@ -95,53 +93,44 @@ object FileInstaller {
         }
     }
 
-    suspend fun applyFilesWithSAF(context: Context, targetFolderUri: Uri): String = withContext(Dispatchers.IO) {
+    suspend fun applyFilesWithShizuku(context: Context, packageName: String): String = withContext(Dispatchers.IO) {
         try {
-            val targetDir = DocumentFile.fromTreeUri(context, targetFolderUri)
-                ?: return@withContext "❌ Không thể mở thư mục đích."
-
-            if (!targetDir.canWrite()) {
-                return@withContext "❌ Không có quyền ghi vào thư mục này. Hãy cấp quyền lại."
+            if (!Shizuku.pingBinder()) {
+                return@withContext "❌ Shizuku chưa chạy. Hãy mở app Shizuku trước."
+            }
+            if (Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
+                return@withContext "❌ Chưa cấp quyền Shizuku cho app này."
             }
 
             val filesToCopy = getLocalAssets(context)
-            if (filesToCopy.isEmpty()) {
-                return@withContext "❌ Không tìm thấy file nào trong assets."
-            }
+            if (filesToCopy.isEmpty()) return@withContext "❌ Không tìm thấy file trong assets."
 
+            val destDir = GameDataPaths.targetBundlePath(packageName)
             var successCount = 0
             var errorCount = 0
 
             for (fileName in filesToCopy) {
-                try {
-                    val assetPath = "$ASSETS_BUNDLES_DIR/$fileName"
-                    val inputStream: InputStream = context.assets.open(assetPath)
-
-                    // Xóa file cũ nếu tồn tại để ghi đè
-                    targetDir.findFile(fileName)?.delete()
-
-                    // Tạo file mới
-                    val newFile = targetDir.createFile("application/octet-stream", fileName)
-                    if (newFile != null) {
-                        context.contentResolver.openOutputStream(newFile.uri)?.use { outputStream ->
-                            inputStream.copyTo(outputStream)
-                        }
-                        successCount++
-                    } else {
-                        errorCount++
-                    }
-                    inputStream.close()
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                    errorCount++
+                // 1. Ghi file từ Assets ra Cache của App trước
+                val tempFile = File(context.cacheDir, fileName)
+                context.assets.open("$ASSETS_BUNDLES_DIR/$fileName").use { input ->
+                    tempFile.outputStream().use { output -> input.copyTo(output) }
                 }
+
+                // 2. Dùng Shizuku chạy lệnh copy
+                val cmd = "mkdir -p $destDir && cp -f ${tempFile.absolutePath} $destDir"
+                val process = Shizuku.newProcess(arrayOf("sh", "-c", cmd), null, null)
+                val exitCode = process.waitFor()
+                
+                tempFile.delete()
+
+                if (exitCode == 0) successCount++ else errorCount++
             }
 
             if (errorCount == 0) "✅ Đã áp dụng thành công $successCount file vào game."
             else "⚠️ Áp dụng xong: $successCount thành công, $errorCount lỗi."
 
         } catch (e: Exception) {
-            "❌ Lỗi hệ thống: ${e.message}"
+            "❌ Lỗi Shizuku: ${e.message}"
         }
     }
 }
@@ -232,13 +221,6 @@ private fun EliteApp(
     startCrosshair: (String, Int, Float, Boolean, Boolean, Boolean) -> Unit, stopCrosshair: () -> Unit
 ) {
     var tab by remember { mutableStateOf(0) }
-    var selected by remember(apps) {
-        mutableStateOf(apps.firstOrNull { it.pkg == "com.dts.freefireth" }
-            ?: apps.firstOrNull { it.pkg == "com.garena.ffvn" })
-    }
-    var preset by remember { mutableStateOf("BALANCED") }
-    var sensitivity by remember { mutableFloatStateOf(.85f) }
-    var smoothness by remember { mutableFloatStateOf(.90f) }
     var status by remember { mutableStateOf("READY • Chưa thay đổi thiết lập hệ thống.") }
     var profiles by remember { mutableStateOf(store.all()) }
     val context = LocalContext.current
@@ -250,15 +232,9 @@ private fun EliteApp(
                 val report = EliteXml.import(input)
                 report.imported.forEach(store::save)
                 profiles = store.all()
-                status = "📥 ${report.summary}" +
-                    if (report.skipped.isNotEmpty())
-                        "\n⚠️ ${report.skipped.take(2).joinToString("; ")}" +
-                            (if (report.skipped.size > 2) "…" else "")
-                    else ""
+                status = "📥 ${report.summary}"
             }
-        }.onFailure { e ->
-            status = "❌ Import lỗi: ${e.message ?: "XML không hợp lệ"}"
-        }
+        }.onFailure { e -> status = "❌ Import lỗi: ${e.message}" }
     }
     val xmlExport = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/xml")) { uri ->
         if (uri != null) runCatching {
@@ -397,39 +373,11 @@ private fun Dashboard(
             }
         }
         Spacer(Modifier.height(16.dp))
-        Section("LICENSE INFORMATION")
-        Surface(color = Panel, shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("KEY STATUS", color = Muted, fontSize = 11.sp, modifier = Modifier.weight(1f))
-                    Text("ACTIVE", color = Green, fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                }
-                InfoCard("License KEY", licenseManager.maskedKey(), Icons.Default.VpnKey)
-                InfoCard("Expiration",
-                    licenseManager.savedExpiration() ?: "Không giới hạn / chưa có dữ liệu",
-                    Icons.Default.Event)
-                InfoCard("Verification", licenseManager.lastMessage(), Icons.Default.VerifiedUser)
-            }
-        }
-        Spacer(Modifier.height(16.dp))
         Section("DEVICE INFORMATION")
         InfoCard("Device name", "$maker $model", Icons.Default.PhoneAndroid)
         InfoCard("Device ID", licenseManager.deviceIdentifier(), Icons.Default.Fingerprint)
         InfoCard("Android version", "$android • API $api", Icons.Default.Android)
-        InfoCard("Manufacturer", maker, Icons.Default.Business)
-        Spacer(Modifier.height(16.dp))
-        Section("DEVICE ANALYZER")
-        InfoCard("Manufacturer / Model", "$maker • $model", Icons.Default.PhoneAndroid)
-        Spacer(Modifier.height(8.dp))
-        InfoCard("Android Version", "$android • API $api", Icons.Default.Android)
-        Spacer(Modifier.height(8.dp))
-        InfoCard("Display Refresh Rate", "${"%.1f".format(hz)} Hz (reported by system)", Icons.Default.Monitor)
-        Spacer(Modifier.height(16.dp))
-        Section("LOCAL PROFILE LIBRARY")
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            MetricCard("SAVED PROFILES", count.toString(), Modifier.weight(1f))
-            MetricCard("ROOT REQUIRED", "NO", Modifier.weight(1f))
-        }
+        InfoCard("Display Refresh Rate", "${"%.1f".format(hz)} Hz", Icons.Default.Monitor)
         Spacer(Modifier.height(16.dp))
         Button(
             onClick = openDisplay,
@@ -439,18 +387,6 @@ private fun Dashboard(
             Icon(Icons.Default.DisplaySettings, null)
             Spacer(Modifier.width(8.dp))
             Text("OPEN DISPLAY SETTINGS")
-        }
-        Text("Profile values are stored locally. They do not modify Free Fire or another app's internal behavior.",
-            color = Muted, fontSize = 11.sp)
-    }
-}
-
-@Composable
-private fun MetricCard(title: String, value: String, modifier: Modifier = Modifier) {
-    Surface(modifier, color = Panel, shape = RoundedCornerShape(15.dp)) {
-        Column(Modifier.padding(14.dp)) {
-            Text(title, color = Muted, fontSize = 10.sp)
-            Text(value, color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
         }
     }
 }
@@ -475,12 +411,6 @@ private fun GameManager(apps: List<InstalledApp>, launchApp: (String) -> Unit) {
             Spacer(Modifier.height(12.dp))
             GameTargetCard("FREE FIRE VN", vnPackage, vnInstalled, false, Color(0xFFFF3F72),
                 onClick = { target = vnPackage })
-            Spacer(Modifier.height(12.dp))
-            Text(
-                "Hãy đặt file của bạn trong thư mục game_payload theo hướng dẫn trong mã nguồn, " +
-                    "sau đó build APK và nhấn ÁP DỤNG FILE.",
-                color = Muted, fontSize = 11.sp
-            )
         } else {
             val pkg = target!!
             val label = if (pkg == thPackage) "FREE FIRE TH" else "FREE FIRE VN"
@@ -494,25 +424,15 @@ private fun GameManager(apps: List<InstalledApp>, launchApp: (String) -> Unit) {
                 Text(label, color = accent, fontWeight = FontWeight.Black)
             }
             Heading("ONE-TAP FILE INSTALLER", label, "Áp dụng bộ file đã đóng gói vào dữ liệu game")
-            if (apps.any { it.pkg == pkg }) {
-                Button(
-                    onClick = { launchApp(pkg) },
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = ButtonDefaults.buttonColors(containerColor = accent, contentColor = Color(0xFF06111A))
-                ) {
-                    Icon(Icons.Default.PlayArrow, null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("VÀO GAME", fontWeight = FontWeight.Bold)
-                }
-            } else {
-                OutlinedButton(onClick = {}, enabled = false, modifier = Modifier.fillMaxWidth()) {
-                    Icon(Icons.Default.Warning, null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("CHƯA CÀI ĐẶT GAME")
-                }
-            }
-            Spacer(Modifier.height(10.dp))
-            GameAssetInstallerPanel(packageName = pkg, gameLabel = label, accent = accent)
+            
+            // HIỂN THỊ PANEL CÀI ĐẶT (ĐÃ CÓ NÚT VÀO GAME + ÁP DỤNG + SHIZUKU)
+            GameAssetInstallerPanel(
+                packageName = pkg, 
+                gameLabel = label, 
+                accent = accent,
+                isGameInstalled = apps.any { it.pkg == pkg },
+                onLaunchGame = { launchApp(pkg) }
+            )
         }
     }
 }
@@ -543,10 +463,8 @@ private fun GameTargetCard(
                 Text(title, color = Color.White, fontWeight = FontWeight.Black, fontSize = 18.sp)
                 Text(packageName, color = Cyan, fontSize = 11.sp)
                 Text(if (installed) "● ĐÃ CÀI ĐẶT  •  SẴN SÀNG" else "○ CHƯA CÀI ĐẶT",
-                    color = if (installed) Green else Color(0xFFFFB45E), fontSize = 9.sp,
+                    color = if (installed) Green else Orange, fontSize = 9.sp,
                     fontWeight = FontWeight.Bold)
-                Spacer(Modifier.height(5.dp))
-                Text("MỞ BẢNG ĐIỀU KHIỂN  →", color = accent, fontSize = 9.sp, fontWeight = FontWeight.Bold)
             }
             Icon(Icons.Default.ChevronRight, null, tint = accent, modifier = Modifier.size(30.dp))
           }
@@ -555,33 +473,48 @@ private fun GameTargetCard(
 }
 
 // ============================================================
-// GAME ASSET INSTALLER PANEL
+// GAME ASSET INSTALLER PANEL (TÍCH HỢP NÚT VÀO GAME + ÁP DỤNG + SHIZUKU)
 // ============================================================
 @Composable
-fun GameAssetInstallerPanel(packageName: String, gameLabel: String, accent: Color) {
+fun GameAssetInstallerPanel(
+    packageName: String, 
+    gameLabel: String, 
+    accent: Color,
+    isGameInstalled: Boolean,
+    onLaunchGame: () -> Unit
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     
-    // Lấy danh sách file từ assets
     val localAssets = remember { FileInstaller.getLocalAssets(context) }
-    
     var statusMsg by remember { mutableStateOf("") }
     var isInstalling by remember { mutableStateOf(false) }
+    
+    // Trạng thái Shizuku
+    var shizukuReady by remember { mutableStateOf(false) }
 
-    // Trình chọn thư mục (SAF)
-    val folderPickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocumentTree()
-    ) { uri: Uri? ->
-        if (uri != null) {
-            isInstalling = true
-            statusMsg = "⏳ Đang áp dụng file..."
-            scope.launch {
-                val result = FileInstaller.applyFilesWithSAF(context, uri)
-                statusMsg = result
-                isInstalling = false
+    fun checkShizuku() {
+        try {
+            if (Shizuku.pingBinder() && Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) {
+                shizukuReady = true
+            } else {
+                shizukuReady = false
             }
+        } catch (e: Exception) {
+            shizukuReady = false
+        }
+    }
+
+    LaunchedEffect(Unit) { checkShizuku() }
+
+    val requestShizukuPermission = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            shizukuReady = true
+            statusMsg = "✅ Đã kết nối Shizuku!"
         } else {
-            statusMsg = "⚠️ Bạn chưa chọn thư mục."
+            statusMsg = "❌ Bạn đã từ chối cấp quyền Shizuku."
         }
     }
 
@@ -595,40 +528,90 @@ fun GameAssetInstallerPanel(packageName: String, gameLabel: String, accent: Colo
         Text(gameLabel, color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Black)
         
         Text(
-            "Thư mục đích: /Android/data/$packageName/files/contentcache/Optional/android/gameassetbundles/",
-            color = Muted,
-            fontSize = 10.sp,
-            lineHeight = 14.sp
+            "Thư mục đích:\n${GameDataPaths.targetBundlePath(packageName)}",
+            color = Muted, fontSize = 10.sp, lineHeight = 14.sp
         )
 
         HorizontalDivider(color = Color(0xFF263A4D), modifier = Modifier.padding(vertical = 4.dp))
 
-        Text(
-            "Phát hiện ${localAssets.size} file trong App:",
-            color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold
-        )
+        // DANH SÁCH FILE
+        Text("Phát hiện ${localAssets.size} file trong App:", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
         if (localAssets.isEmpty()) {
             Text("Không tìm thấy file nào.", color = Color(0xFFFF7777), fontSize = 11.sp)
         } else {
             localAssets.forEach { fileName ->
-                Text(
-                    "• $fileName",
-                    color = accent, fontSize = 10.sp,
-                    modifier = Modifier.padding(start = 8.dp)
-                )
+                Text("• $fileName", color = accent, fontSize = 10.sp, modifier = Modifier.padding(start = 8.dp))
             }
         }
 
         Spacer(Modifier.height(8.dp))
 
-        // NÚT ÁP DỤNG
+        // 1. NÚT VÀO GAME
+        if (isGameInstalled) {
+            Button(
+                onClick = onLaunchGame,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(containerColor = accent, contentColor = Color(0xFF06111A))
+            ) {
+                Icon(Icons.Default.PlayArrow, null)
+                Spacer(Modifier.width(8.dp))
+                Text("VÀO GAME", fontWeight = FontWeight.Bold)
+            }
+        } else {
+            OutlinedButton(onClick = {}, enabled = false, modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Default.Warning, null)
+                Spacer(Modifier.width(8.dp))
+                Text("CHƯA CÀI ĐẶT GAME")
+            }
+        }
+
+        // 2. NÚT KẾT NỐI SHIZUKU
+        if (!shizukuReady) {
+            Button(
+                onClick = {
+                    try {
+                        if (!Shizuku.pingBinder()) {
+                            statusMsg = "❌ Shizuku chưa chạy. Hãy mở app Shizuku trước."
+                        } else {
+                            requestShizukuPermission.launch("moe.shizuku.privileged.api")
+                        }
+                    } catch (e: Exception) {
+                        statusMsg = "❌ Lỗi Shizuku: ${e.message}"
+                    }
+                },
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(containerColor = Orange, contentColor = Color.Black)
+            ) {
+                Icon(Icons.Default.Security, null)
+                Spacer(Modifier.width(8.dp))
+                Text("KẾT NỐI SHIZUKU", fontWeight = FontWeight.Bold)
+            }
+        } else {
+            Surface(
+                color = Color(0xFF103D36),
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.CheckCircle, null, tint = Green, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Shizuku đã kết nối", color = Green, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+
+        // 3. NÚT ÁP DỤNG FILE
         Button(
             onClick = {
-                // Mở thẳng vào thư mục gốc của bộ nhớ trong để dễ tìm
-                val initialUri = Uri.parse("content://com.android.externalstorage.documents/root/primary")
-                folderPickerLauncher.launch(initialUri)
+                isInstalling = true
+                statusMsg = "⏳ Đang áp dụng qua Shizuku..."
+                scope.launch {
+                    val result = FileInstaller.applyFilesWithShizuku(context, packageName)
+                    statusMsg = result
+                    isInstalling = false
+                }
             },
-            enabled = !isInstalling && localAssets.isNotEmpty(),
+            enabled = !isInstalling && localAssets.isNotEmpty() && shizukuReady,
             modifier = Modifier.fillMaxWidth(),
             colors = ButtonDefaults.buttonColors(containerColor = accent, contentColor = Color(0xFF06111A))
         ) {
@@ -640,7 +623,7 @@ fun GameAssetInstallerPanel(packageName: String, gameLabel: String, accent: Colo
         if (statusMsg.isNotEmpty()) {
             Text(
                 text = statusMsg,
-                color = if (statusMsg.startsWith("✅")) Green else Color(0xFFFFB45E),
+                color = if (statusMsg.startsWith("✅")) Green else Orange,
                 fontSize = 12.sp, fontWeight = FontWeight.Medium,
                 modifier = Modifier.padding(top = 4.dp)
             )
@@ -653,13 +636,10 @@ fun GameAssetInstallerPanel(packageName: String, gameLabel: String, accent: Colo
         ) {
             Text(
                 "💡 HƯỚNG DẪN:\n" +
-                "1. Nhấn nút Áp Dụng.\n" +
-                "2. Bấm dấu 3 chấm (⋮) chọn 'Hiển thị bộ nhớ trong' (nếu không thấy Android).\n" +
-                "3. Tìm đến: Android/data/$packageName/files/contentcache/Optional/android/gameassetbundles/\n" +
-                "4. Nhấn 'Sử dụng thư mục này' để hoàn tất.",
-                color = Muted,
-                fontSize = 10.sp,
-                lineHeight = 15.sp,
+                "1. Đảm bảo app Shizuku đang chạy.\n" +
+                "2. Nhấn 'KẾT NỐI SHIZUKU' và cấp quyền.\n" +
+                "3. Nhấn 'ÁP DỤNG FILE VÀO GAME' để copy đè file.",
+                color = Muted, fontSize = 10.sp, lineHeight = 15.sp,
                 modifier = Modifier.padding(10.dp)
             )
         }
@@ -674,8 +654,7 @@ private fun XmlManager(
     profiles: List<GameProfile>, onImport: () -> Unit, onExport: () -> Unit, onDelete: (String) -> Unit
 ) {
     ScreenColumn {
-        Heading("CONFIGURATION FILES", "XML Manager",
-            "Import and apply supported MINHDUC XML profiles")
+        Heading("CONFIGURATION FILES", "XML Manager", "Import and apply supported MINHDUC XML profiles")
         InfoCard("Profiles stored", profiles.size.toString(), Icons.Default.FolderOpen)
         Spacer(Modifier.height(14.dp))
         Button(onClick = onImport, modifier = Modifier.fillMaxWidth()) {
@@ -686,30 +665,15 @@ private fun XmlManager(
             Icon(Icons.Default.FileDownload, null); Spacer(Modifier.width(8.dp))
             Text("EXPORT XML")
         }
-        Text(
-            "Hỗ trợ XML profile MINHDUC: package, name, preset, sensitivity, smoothness. " +
-                "Chấp nhận nhiều root tag (<MINHDUC_ENGINE>, <APP>, <PROFILES>…). " +
-                "Entry lỗi sẽ bị bỏ qua thay vì fail cả file.",
-            color = Muted, fontSize = 11.sp
-        )
         Spacer(Modifier.height(18.dp))
         Section("SAVED PROFILES")
-        if (profiles.isEmpty())
-            Text("No profiles yet. Create one in Game Manager or import an XML file.",
-                color = Muted, fontSize = 12.sp)
+        if (profiles.isEmpty()) Text("No profiles yet.", color = Muted, fontSize = 12.sp)
         profiles.forEach { p ->
-            Surface(
-                color = Panel, shape = RoundedCornerShape(14.dp),
-                modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
-            ) {
+            Surface(color = Panel, shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
                 Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text(p.appName, color = Color.White, fontWeight = FontWeight.SemiBold)
                         Text(p.packageName, color = Muted, fontSize = 10.sp)
-                        Text(
-                            "${p.preset} • Sens ${(p.sensitivity * 100).toInt()} • Smooth ${(p.smoothness * 100).toInt()}",
-                            color = Cyan, fontSize = 10.sp
-                        )
                     }
                     IconButton(onClick = { onDelete(p.packageName) }) {
                         Icon(Icons.Default.Delete, null, tint = Color(0xFFFF647C))
@@ -717,12 +681,6 @@ private fun XmlManager(
                 }
             }
         }
-        Spacer(Modifier.height(10.dp))
-        Text(
-            "XML chỉ là dữ liệu — parser không thực thi bất kỳ lệnh nào, có chống XXE. " +
-                "File XML lạ không thể chạy mã trong app hoặc thay đổi dữ liệu bên trong Free Fire.",
-            color = Muted, fontSize = 11.sp
-        )
     }
 }
 
@@ -739,156 +697,45 @@ private fun SettingsScreen(
     val facebookUrl = "https://www.facebook.com/share/1A8hF8BzF4/?mibextid=wwXIfr"
 
     fun openLink(url: String) {
-        runCatching {
-            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
-        }
+        runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
     }
 
     ScreenColumn {
-        Heading(
-            "APPLICATION PREFERENCES", "Settings",
-            "Gói dịch vụ ROOT • liên hệ tư vấn • thông tin thiết bị"
-        )
-
-        Section("DANH SÁCH GÓI DỊCH VỤ")
-        Text(
-            "Lựa chọn gói phù hợp với nhu cầu của bạn. Nhấn nút đăng ký để liên hệ và được tư vấn chi tiết trước khi sử dụng.",
-            color = Muted, fontSize = 11.sp, lineHeight = 16.sp
-        )
-        Spacer(Modifier.height(12.dp))
-
-        RootPackageCard(
-            name = "ROOT CƠ BẢN", price = "150.000đ",
-            description = "Gói ROOT cơ bản dành cho nhu cầu sử dụng thông thường.",
-            accent = Cyan, onRegister = { openLink(zaloUrl) }
-        )
-        Spacer(Modifier.height(10.dp))
-        RootPackageCard(
-            name = "CHỨNG CHỈ ROOT", price = "250.000đ",
-            description = "Gói chứng chỉ ROOT. Liên hệ để được tư vấn thiết bị và điều kiện tương thích.",
-            accent = Color(0xFF9C8CFF), onRegister = { openLink(zaloUrl) }
-        )
-        Spacer(Modifier.height(10.dp))
-        RootPackageCard(
-            name = "ROOT VIP ANDROID", price = "450.000đ",
-            description = "Gói VIP Android dành cho khách hàng có nhu cầu nâng cấp trải nghiệm.",
-            accent = Color(0xFFFFC36A), onRegister = { openLink(zaloUrl) },
-            featured = true
-        )
-
-        Spacer(Modifier.height(16.dp))
-        Surface(
-            color = Panel2, shape = RoundedCornerShape(18.dp),
-            border = BorderStroke(1.dp, Cyan.copy(alpha = 0.45f)),
-            modifier = Modifier.fillMaxWidth()
+        Heading("APPLICATION PREFERENCES", "Settings", "Gói dịch vụ ROOT • liên hệ tư vấn • thông tin thiết bị")
+        
+        Section("LIÊN HỆ HỖ TRỢ")
+        Button(
+            onClick = { openLink(zaloUrl) }, modifier = Modifier.fillMaxWidth(),
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF087FE8))
         ) {
-            Column(Modifier.padding(16.dp)) {
-                Text("MUỐN NÂNG CẤP VIP HƠN?", color = Cyan,
-                    fontSize = 14.sp, fontWeight = FontWeight.Black)
-                Spacer(Modifier.height(5.dp))
-                Text(
-                    "Nếu bạn cần gói cao hơn hoặc muốn hỏi về thiết bị, hãy nhắn trực tiếp để được tư vấn riêng.",
-                    color = Muted, fontSize = 11.sp, lineHeight = 16.sp
-                )
-                Spacer(Modifier.height(12.dp))
-                Button(
-                    onClick = { openLink(zaloUrl) }, modifier = Modifier.fillMaxWidth(),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF087FE8))
-                ) {
-                    Icon(Icons.Default.Chat, contentDescription = null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("LIÊN HỆ ZALO • 0358648824")
-                }
-                Spacer(Modifier.height(8.dp))
-                OutlinedButton(
-                    onClick = { openLink(facebookUrl) }, modifier = Modifier.fillMaxWidth(),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Cyan),
-                    border = BorderStroke(1.dp, Cyan.copy(alpha = 0.6f))
-                ) {
-                    Icon(Icons.Default.Public, contentDescription = null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("LIÊN HỆ FACEBOOK")
-                }
-            }
+            Icon(Icons.Default.Chat, contentDescription = null)
+            Spacer(Modifier.width(8.dp))
+            Text("LIÊN HỆ ZALO • 0358648824")
+        }
+        Spacer(Modifier.height(8.dp))
+        OutlinedButton(
+            onClick = { openLink(facebookUrl) }, modifier = Modifier.fillMaxWidth(),
+            colors = ButtonDefaults.outlinedButtonColors(contentColor = Cyan),
+            border = BorderStroke(1.dp, Cyan.copy(alpha = 0.6f))
+        ) {
+            Icon(Icons.Default.Public, contentDescription = null)
+            Spacer(Modifier.width(8.dp))
+            Text("LIÊN HỆ FACEBOOK")
         }
 
         Spacer(Modifier.height(16.dp))
         Section("THÔNG TIN THIẾT BỊ")
         InfoCard("Device", "$maker $model", Icons.Default.PhoneAndroid)
-        Spacer(Modifier.height(8.dp))
         InfoCard("Android", "$android • API $api", Icons.Default.Android)
 
         Spacer(Modifier.height(16.dp))
         Section("SYSTEM SHORTCUTS")
-        Button(
-            onClick = openDisplay, modifier = Modifier.fillMaxWidth(),
-            colors = ButtonDefaults.buttonColors(containerColor = Panel2)
-        ) {
-            Icon(Icons.Default.DisplaySettings, null)
-            Spacer(Modifier.width(8.dp))
-            Text("OPEN DISPLAY SETTINGS")
+        Button(onClick = openDisplay, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = Panel2)) {
+            Icon(Icons.Default.DisplaySettings, null); Spacer(Modifier.width(8.dp)); Text("OPEN DISPLAY SETTINGS")
         }
         Spacer(Modifier.height(8.dp))
-        Button(
-            onClick = openAccessibility, modifier = Modifier.fillMaxWidth(),
-            colors = ButtonDefaults.buttonColors(containerColor = Panel2)
-        ) {
-            Icon(Icons.Default.Accessibility, null)
-            Spacer(Modifier.width(8.dp))
-            Text("OPEN ACCESSIBILITY SETTINGS")
-        }
-
-        Spacer(Modifier.height(16.dp))
-        Section("ABOUT")
-        Text(
-            "MINHDUC ANDROID ELITE 4.4 — công cụ quản lý profile, XML và overlay tâm ảo. " +
-                "Các gói dịch vụ được giới thiệu ở trên cần được tư vấn về khả năng tương thích " +
-                "với từng thiết bị trước khi đăng ký.",
-            color = Muted, fontSize = 11.sp, lineHeight = 16.sp
-        )
-        Spacer(Modifier.height(8.dp))
-        InfoCard("Version", "4.2 • Elite Build", Icons.Default.Info)
-        Spacer(Modifier.height(8.dp))
-        InfoCard("Terms", "Use at your own risk", Icons.Default.Warning)
-    }
-}
-
-@Composable
-private fun RootPackageCard(
-    name: String,
-    price: String,
-    description: String,
-    accent: Color,
-    onRegister: () -> Unit,
-    featured: Boolean = false
-) {
-    Surface(
-        color = Panel, shape = RoundedCornerShape(18.dp),
-        border = BorderStroke(
-            if (featured) 1.8.dp else 1.dp,
-            accent.copy(alpha = if (featured) 0.95f else 0.45f)
-        ),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Column(Modifier.padding(15.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text(name, color = accent, fontSize = 13.sp, fontWeight = FontWeight.Black)
-                    Spacer(Modifier.height(4.dp))
-                    Text(description, color = Muted, fontSize = 11.sp, lineHeight = 15.sp)
-                }
-                Spacer(Modifier.width(8.dp))
-                Text(price, color = Color.White, fontSize = 17.sp, fontWeight = FontWeight.Black)
-            }
-            Spacer(Modifier.height(12.dp))
-            Button(
-                onClick = onRegister, modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.buttonColors(containerColor = accent)
-            ) {
-                Icon(Icons.Default.Chat, contentDescription = null)
-                Spacer(Modifier.width(7.dp))
-                Text("ĐĂNG KÝ / TƯ VẤN", color = Color(0xFF07111A))
-            }
+        Button(onClick = openAccessibility, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = Panel2)) {
+            Icon(Icons.Default.Accessibility, null); Spacer(Modifier.width(8.dp)); Text("OPEN ACCESSIBILITY SETTINGS")
         }
     }
 }
