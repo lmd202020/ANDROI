@@ -251,7 +251,7 @@ private fun RobotApp(
                     manufacturer, model, androidVersion, api, refreshRate,
                     profiles.size, licenseManager, openDisplay
                 )
-                1 -> GameLauncher(apps, launchApp) { status = it }
+                1 -> GameLauncher(apps, launchApp, context) { status = it }
                 2 -> XmlInstaller(
                     profiles,
                     onImport = { xmlImport.launch(arrayOf("application/xml", "text/xml", "text/*")) },
@@ -493,108 +493,208 @@ private fun CommandCenter(
 }
 
 // ============================================================
-// MODULE M02 — GAME LAUNCHER
+// MODULE M02 — GAME SELECTOR
 // ============================================================
 @Composable
 private fun GameLauncher(
     apps: List<InstalledApp>,
     launchApp: (String) -> Unit,
+    context: Context,
     onStatus: (String) -> Unit
 ) {
     val thPkg = "com.dts.freefireth"
     val vnPkg = "com.garena.ffvn"
+    var selectedPackage by remember { mutableStateOf<String?>(null) }
 
-    ScreenColumn {
-        Heading(
-            "M02 • GAME LAUNCHER", "Chạy game",
-            "Chọn phiên bản game đã cài và mở nhanh"
-        )
+    val selected = selectedPackage
+    if (selected == null) {
+        ScreenColumn {
+            Heading(
+                "M02 • GAME CENTER", "Chọn phiên bản game",
+                "Chọn Free Fire TH hoặc Free Fire VN để mở chức năng riêng"
+            )
+            GameChoiceCard(
+                title = "FREE FIRE TH",
+                packageName = thPkg,
+                installed = apps.any { it.pkg == thPkg },
+                accent = Cyan,
+                onClick = { selectedPackage = thPkg }
+            )
+            Spacer(Modifier.height(12.dp))
+            GameChoiceCard(
+                title = "FREE FIRE VN",
+                packageName = vnPkg,
+                installed = apps.any { it.pkg == vnPkg },
+                accent = Pink,
+                onClick = { selectedPackage = vnPkg }
+            )
+        }
+    } else {
+        val isTh = selected == thPkg
+        val title = if (isTh) "FREE FIRE TH" else "FREE FIRE VN"
+        val accent = if (isTh) Cyan else Pink
+        val installed = apps.any { it.pkg == selected }
 
-        GameTargetCard(
-            "FREE FIRE TH", thPkg,
-            apps.any { it.pkg == thPkg }, false, Cyan,
-            onClick = { onStatus("Đã chọn Free Fire TH") },
-            onLaunch = { launchApp(thPkg); onStatus("Đang mở Free Fire TH…") }
-        )
-
-        Spacer(Modifier.height(12.dp))
-
-        GameTargetCard(
-            "FREE FIRE VN", vnPkg,
-            apps.any { it.pkg == vnPkg }, false, Pink,
-            onClick = { onStatus("Đã chọn Free Fire VN") },
-            onLaunch = { launchApp(vnPkg); onStatus("Đang mở Free Fire VN…") }
-        )
-
-        Spacer(Modifier.height(14.dp))
-        Text(
-            "Module này chỉ mở game đã cài. Không can thiệp file game, không root, " +
-            "không thay đổi dữ liệu Free Fire.",
-            color = Muted, fontSize = 11.sp, lineHeight = 16.sp
-        )
-    }
-}
-
-@Composable
-private fun GameTargetCard(
-    title: String, packageName: String, installed: Boolean,
-    selected: Boolean, accent: Color, onClick: () -> Unit, onLaunch: () -> Unit
-) {
-    Surface(
-        color = Panel, shape = RoundedCornerShape(18.dp),
-        border = BorderStroke(
-            if (selected) 2.dp else 1.dp,
-            accent.copy(alpha = if (selected) 1f else .45f)
-        ),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(
-                Modifier.fillMaxWidth().clickable(onClick = onClick),
-                verticalAlignment = Alignment.CenterVertically
+        ScreenColumn {
+            OutlinedButton(
+                onClick = { selectedPackage = null },
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = accent)
             ) {
-                Surface(
-                    color = accent.copy(alpha = .14f), shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier.size(52.dp)
+                Icon(Icons.Default.ArrowBack, contentDescription = null)
+                Spacer(Modifier.width(6.dp))
+                Text("QUAY LẠI DANH SÁCH")
+            }
+
+            Heading("GAME CENTER • ${if (isTh) "TH" else "VN"}", title,
+                "Quản lý kết nối và mở phiên bản game đã chọn")
+
+            Surface(
+                color = Panel,
+                shape = RoundedCornerShape(18.dp),
+                border = BorderStroke(1.dp, accent.copy(alpha = .65f)),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Image(
-                            painterResource(R.drawable.ff_avatar), contentDescription = title,
-                            modifier = Modifier.size(44.dp)
-                        )
-                    }
-                }
-                Spacer(Modifier.width(12.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(title, color = Color.White, fontWeight = FontWeight.Black, fontSize = 17.sp)
-                    Text(packageName, color = Cyan, fontSize = 10.sp)
+                    Text(title, color = Color.White, fontSize = 19.sp,
+                        fontWeight = FontWeight.Black)
+                    Text("Package ID: $selected", color = Cyan, fontSize = 11.sp)
                     Text(
-                        if (installed) "● ĐÃ CÀI ĐẶT • SẴN SÀNG" else "○ CHƯA CÀI ĐẶT",
-                        color = if (installed) Green else Amber, fontSize = 9.sp,
-                        fontWeight = FontWeight.Bold
+                        if (installed) "● ĐÃ CÀI ĐẶT" else "○ CHƯA CÀI ĐẶT",
+                        color = if (installed) Green else Amber,
+                        fontSize = 10.sp, fontWeight = FontWeight.Bold
+                    )
+
+                    Button(
+                        onClick = {
+                            val intent = context.packageManager.getLaunchIntentForPackage(selected)
+                            if (intent != null) {
+                                context.startActivity(intent)
+                                onStatus("Đang mở $title…")
+                            } else {
+                                onStatus("$title chưa được cài đặt.")
+                            }
+                        },
+                        enabled = installed,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = accent,
+                            contentColor = Color(0xFF06111A)
+                        )
+                    ) {
+                        Icon(Icons.Default.PlayArrow, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("VÀO GAME", fontWeight = FontWeight.Bold)
+                    }
+
+                    OutlinedButton(
+                        onClick = {
+                            when {
+                                !ShizukuPerformance.isServiceRunning() -> {
+                                    onStatus("Shizuku chưa chạy. Hãy khởi động Shizuku trước.")
+                                }
+                                !ShizukuPerformance.hasPermission() -> {
+                                    runCatching { ShizukuPerformance.requestPermission() }
+                                        .onSuccess {
+                                            onStatus("Đã gửi yêu cầu quyền Shizuku. Cấp quyền rồi nhấn KẾT NỐI lại.")
+                                        }
+                                        .onFailure {
+                                            onStatus("Không thể yêu cầu quyền Shizuku: ${it.message}")
+                                        }
+                                }
+                                else -> {
+                                    ShizukuPerformance.connect(context) { ok, message ->
+                                        onStatus(message)
+                                    }
+                                }
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = accent)
+                    ) {
+                        Icon(Icons.Default.Link, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("KẾT NỐI SHIZUKU", fontWeight = FontWeight.Bold)
+                    }
+
+                    Text(
+                        when {
+                            !ShizukuPerformance.isServiceRunning() ->
+                                "Shizuku: chưa chạy"
+                            !ShizukuPerformance.hasPermission() ->
+                                "Shizuku: chưa cấp quyền cho MINHDUC"
+                            ShizukuPerformance.isUserServiceConnected() ->
+                                "Shizuku: đã kết nối"
+                            else -> "Shizuku: đã cấp quyền, chưa kết nối UserService"
+                        },
+                        color = if (ShizukuPerformance.isUserServiceConnected()) Green else Amber,
+                        fontSize = 11.sp
+                    )
+
+                    HorizontalDivider(color = Color(0xFF26394A))
+                    Text("QUẢN LÝ TỆP", color = accent,
+                        fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    Text(
+                        "Có thể kiểm tra đường dẫn và sao lưu/khôi phục tệp thông thường. " +
+                            "Chức năng ghi tài nguyên can thiệp game không được cung cấp.",
+                        color = Muted, fontSize = 11.sp, lineHeight = 16.sp
                     )
                 }
-                Icon(Icons.Default.ChevronRight, null, tint = accent, modifier = Modifier.size(28.dp))
-            }
-            Button(
-                onClick = onLaunch, enabled = installed,
-                modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = accent, contentColor = Color(0xFF06111A)
-                )
-            ) {
-                Icon(Icons.Default.PlayArrow, null)
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    if (installed) "VÀO GAME" else "CHƯA CÀI ĐẶT GAME",
-                    fontWeight = FontWeight.Bold
-                )
             }
         }
     }
 }
 
-// ============================================================
+@Composable
+private fun GameChoiceCard(
+    title: String,
+    packageName: String,
+    installed: Boolean,
+    accent: Color,
+    onClick: () -> Unit
+) {
+    Surface(
+        color = Panel,
+        shape = RoundedCornerShape(18.dp),
+        border = BorderStroke(1.dp, accent.copy(alpha = .55f)),
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)
+    ) {
+        Row(
+            Modifier.fillMaxWidth().padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Surface(
+                color = accent.copy(alpha = .14f),
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier.size(54.dp)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Image(
+                        painterResource(R.drawable.ff_avatar),
+                        contentDescription = title,
+                        modifier = Modifier.size(44.dp)
+                    )
+                }
+            }
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(title, color = Color.White,
+                    fontWeight = FontWeight.Black, fontSize = 17.sp)
+                Text(packageName, color = Cyan, fontSize = 10.sp)
+                Text(
+                    if (installed) "● ĐÃ CÀI ĐẶT" else "○ CHƯA CÀI ĐẶT",
+                    color = if (installed) Green else Amber,
+                    fontSize = 9.sp, fontWeight = FontWeight.Bold
+                )
+            }
+            Icon(Icons.Default.ChevronRight, null, tint = accent,
+                modifier = Modifier.size(28.dp))
+        }
+    }
+}
+
 // MODULE M03 — XML INSTALLER
 // ============================================================
 @Composable
