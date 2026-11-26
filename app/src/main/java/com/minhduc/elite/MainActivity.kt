@@ -31,6 +31,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.documentfile.provider.DocumentFile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -47,6 +48,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import java.io.InputStream
 import java.util.Locale
 
 // ============================================================
@@ -60,6 +62,72 @@ private val Muted = Color(0xFF9AAABD)
 private val Green = Color(0xFF43D99B)
 
 data class InstalledApp(val label: String, val pkg: String)
+
+// ============================================================
+// FILE INSTALLER LOGIC
+// ============================================================
+object FileInstaller {
+    // Đường dẫn chuẩn xác dựa trên hình ảnh bạn cung cấp
+    const val ASSETS_BUNDLES_DIR = "game_payload/file/contentcache/Optional/android/gameassetbundles"
+
+    fun getLocalAssets(context: Context): List<String> {
+        return try {
+            context.assets.list(ASSETS_BUNDLES_DIR)?.toList() ?: emptyList()
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    suspend fun applyFilesWithSAF(context: Context, targetFolderUri: Uri): String = withContext(Dispatchers.IO) {
+        try {
+            val targetDir = DocumentFile.fromTreeUri(context, targetFolderUri)
+                ?: return@withContext "❌ Không thể mở thư mục đích."
+
+            if (!targetDir.canWrite()) {
+                return@withContext "❌ Không có quyền ghi vào thư mục này. Hãy cấp quyền lại."
+            }
+
+            val filesToCopy = getLocalAssets(context)
+            if (filesToCopy.isEmpty()) {
+                return@withContext "❌ Không tìm thấy file nào trong assets."
+            }
+
+            var successCount = 0
+            var errorCount = 0
+
+            for (fileName in filesToCopy) {
+                try {
+                    val assetPath = "$ASSETS_BUNDLES_DIR/$fileName"
+                    val inputStream: InputStream = context.assets.open(assetPath)
+
+                    // Xóa file cũ nếu tồn tại để ghi đè
+                    targetDir.findFile(fileName)?.delete()
+
+                    // Tạo file mới
+                    val newFile = targetDir.createFile("application/octet-stream", fileName)
+                    if (newFile != null) {
+                        context.contentResolver.openOutputStream(newFile.uri)?.use { outputStream ->
+                            inputStream.copyTo(outputStream)
+                        }
+                        successCount++
+                    } else {
+                        errorCount++
+                    }
+                    inputStream.close()
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                    errorCount++
+                }
+            }
+
+            if (errorCount == 0) "✅ Đã áp dụng thành công $successCount file vào game."
+            else "⚠️ Áp dụng xong: $successCount thành công, $errorCount lỗi."
+
+        } catch (e: Exception) {
+            "❌ Lỗi hệ thống: ${e.message}"
+        }
+    }
+}
 
 // ============================================================
 // ACTIVITY
@@ -285,16 +353,6 @@ private fun InfoCard(title: String, value: String, icon: ImageVector) {
     }
 }
 
-@Composable
-private fun LabeledSlider(
-    label: String, value: Float, onValueChange: (Float) -> Unit, range: ClosedFloatingPointRange<Float>
-) {
-    Column {
-        Text(label, color = Muted, fontSize = 11.sp)
-        Slider(value = value, onValueChange = onValueChange, valueRange = range)
-    }
-}
-
 // ============================================================
 // DASHBOARD
 // ============================================================
@@ -381,7 +439,7 @@ private fun MetricCard(title: String, value: String, modifier: Modifier = Modifi
 }
 
 // ============================================================
-// GAME MANAGER (TÍCH HỢP 3 MODULE MỚI)
+// GAME MANAGER
 // ============================================================
 @Composable
 private fun GameManager(apps: List<InstalledApp>, launchApp: (String) -> Unit) {
@@ -475,6 +533,118 @@ private fun GameTargetCard(
             }
             Icon(Icons.Default.ChevronRight, null, tint = accent, modifier = Modifier.size(30.dp))
           }
+        }
+    }
+}
+
+// ============================================================
+// GAME ASSET INSTALLER PANEL (CẬP NHẬT MỚI)
+// ============================================================
+@Composable
+fun GameAssetInstallerPanel(packageName: String, gameLabel: String, accent: Color) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    
+    // Lấy danh sách file từ assets
+    val localAssets = remember { FileInstaller.getLocalAssets(context) }
+    
+    var statusMsg by remember { mutableStateOf("") }
+    var isInstalling by remember { mutableStateOf(false) }
+
+    // Trình chọn thư mục (SAF)
+    val folderPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            isInstalling = true
+            statusMsg = "⏳ Đang áp dụng file..."
+            scope.launch {
+                val result = FileInstaller.applyFilesWithSAF(context, uri)
+                statusMsg = result
+                isInstalling = false
+            }
+        } else {
+            statusMsg = "⚠️ Bạn chưa chọn thư mục."
+        }
+    }
+
+    Column(
+        Modifier.fillMaxWidth()
+            .background(Panel, RoundedCornerShape(20.dp))
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Text("GAME DATA LOCATION", color = accent, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+        Text(gameLabel, color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Black)
+        
+        Text(
+            "Thư mục đích: /Android/data/$packageName/files/contentcache/Optional/android/gameassetbundles/",
+            color = Muted,
+            fontSize = 10.sp,
+            lineHeight = 14.sp
+        )
+
+        HorizontalDivider(color = Color(0xFF263A4D), modifier = Modifier.padding(vertical = 4.dp))
+
+        Text(
+            "Phát hiện ${localAssets.size} file trong App:",
+            color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold
+        )
+        if (localAssets.isEmpty()) {
+            Text("Không tìm thấy file nào.", color = Color(0xFFFF7777), fontSize = 11.sp)
+        } else {
+            localAssets.forEach { fileName ->
+                Text(
+                    "• $fileName",
+                    color = accent, fontSize = 10.sp,
+                    modifier = Modifier.padding(start = 8.dp)
+                )
+            }
+        }
+
+        Spacer(Modifier.height(8.dp))
+
+        // NÚT ÁP DỤNG
+        Button(
+            onClick = {
+                // Mở thẳng vào thư mục gốc của bộ nhớ trong để dễ tìm
+                val initialUri = Uri.parse("content://com.android.externalstorage.documents/root/primary")
+                folderPickerLauncher.launch(initialUri)
+            },
+            enabled = !isInstalling && localAssets.isNotEmpty(),
+            modifier = Modifier.fillMaxWidth(),
+            colors = ButtonDefaults.buttonColors(containerColor = accent, contentColor = Color(0xFF06111A))
+        ) {
+            Icon(Icons.Default.InstallMobile, contentDescription = null)
+            Spacer(Modifier.width(8.dp))
+            Text(if (isInstalling) "ĐANG XỬ LÝ..." else "ÁP DỤNG FILE VÀO GAME", fontWeight = FontWeight.Bold)
+        }
+
+        if (statusMsg.isNotEmpty()) {
+            Text(
+                text = statusMsg,
+                color = if (statusMsg.startsWith("✅")) Green else Color(0xFFFFB45E),
+                fontSize = 12.sp, fontWeight = FontWeight.Medium,
+                modifier = Modifier.padding(top = 4.dp)
+            )
+        }
+
+        Surface(
+            color = Color(0xFF1C2A38),
+            shape = RoundedCornerShape(8.dp),
+            modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+        ) {
+            Text(
+                "💡 HƯỚNG DẪN:\n" +
+                "1. Nhấn nút Áp Dụng.\n" +
+                "2. Bấm dấu 3 chấm (⋮) chọn 'Hiển thị bộ nhớ trong' (nếu không thấy Android).\n" +
+                "3. Tìm đến: Android/data/$packageName/files/contentcache/Optional/android/gameassetbundles/\n" +
+                "4. Nhấn 'Sử dụng thư mục này' để hoàn tất.",
+                color = Muted,
+                fontSize = 10.sp,
+                lineHeight = 15.sp,
+                modifier = Modifier.padding(10.dp)
+            )
         }
     }
 }
