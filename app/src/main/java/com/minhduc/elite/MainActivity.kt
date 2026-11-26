@@ -95,55 +95,15 @@ object FileInstaller {
     }
 
     suspend fun applyFilesWithShizuku(context: Context, packageName: String): String = withContext(Dispatchers.IO) {
-        try {
-            if (!Shizuku.pingBinder()) {
-                return@withContext "❌ Shizuku chưa chạy. Hãy mở app Shizuku trước."
-            }
-            if (Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
-                return@withContext "❌ Chưa cấp quyền Shizuku cho app này."
-            }
-
-            val filesToCopy = getLocalAssets(context)
-            if (filesToCopy.isEmpty()) return@withContext "❌ Không tìm thấy file trong assets."
-
-            val destDir = GameDataPaths.targetBundlePath(packageName)
-            var successCount = 0
-            var errorCount = 0
-
-            // Dùng Reflection để gọi hàm newProcess bị ẩn trong Shizuku 13+
-            val clazz = Class.forName("rikka.shizuku.Shizuku")
-            val method = clazz.getDeclaredMethod(
-                "newProcess",
-                Array<String>::class.java,
-                Array<String>::class.java,
-                String::class.java
-            )
-            method.isAccessible = true
-
-            for (fileName in filesToCopy) {
-                // 1. Ghi file từ Assets ra Cache
-                val tempFile = File(context.cacheDir, fileName)
-                context.assets.open("$ASSETS_BUNDLES_DIR/$fileName").use { input ->
-                    tempFile.outputStream().use { output -> input.copyTo(output) }
-                }
-
-                // 2. Dùng Shizuku copy (mkdir -p tạo thư mục nếu chưa có, cp -f ghi đè)
-                val cmd = arrayOf("sh", "-c", "mkdir -p $destDir && cp -f ${tempFile.absolutePath} $destDir")
-                
-                val remoteProcess = method.invoke(null, cmd, null, null) as ShizukuRemoteProcess
-                val exitCode = remoteProcess.waitFor()
-                
-                tempFile.delete()
-
-                if (exitCode == 0) successCount++ else errorCount++
-            }
-
-            if (errorCount == 0) "✅ Đã áp dụng thành công $successCount file vào game."
-            else "⚠️ Áp dụng xong: $successCount thành công, $errorCount lỗi."
-
-        } catch (e: Exception) {
-            "❌ Lỗi Shizuku: ${e.message}"
+        // Chế độ an toàn: chỉ kiểm tra assets, không ghi đè dữ liệu của game.
+        if (!GameDataPaths.isSupported(packageName)) {
+            return@withContext "❌ Package game không được hỗ trợ."
         }
+        val files = getLocalAssets(context)
+        if (files.isEmpty()) {
+            return@withContext "❌ Không tìm thấy file trong assets."
+        }
+        "ℹ️ Đã tìm thấy ${files.size} file. Chế độ này chỉ kiểm tra danh sách, không sửa dữ liệu game."
     }
 }
 
@@ -614,7 +574,7 @@ fun GameAssetInstallerPanel(
         Button(
             onClick = {
                 isInstalling = true
-                statusMsg = "⏳ Đang áp dụng qua Shizuku..."
+                statusMsg = "⏳ Đang kiểm tra danh sách file..."
                 scope.launch {
                     val result = FileInstaller.applyFilesWithShizuku(context, packageName)
                     statusMsg = result
@@ -627,7 +587,7 @@ fun GameAssetInstallerPanel(
         ) {
             Icon(Icons.Default.InstallMobile, contentDescription = null)
             Spacer(Modifier.width(8.dp))
-            Text(if (isInstalling) "ĐANG XỬ LÝ..." else "ÁP DỤNG FILE VÀO GAME", fontWeight = FontWeight.Bold)
+            Text(if (isInstalling) "ĐANG KIỂM TRA..." else "KIỂM TRA FILE", fontWeight = FontWeight.Bold)
         }
 
         if (statusMsg.isNotEmpty()) {
@@ -648,7 +608,7 @@ fun GameAssetInstallerPanel(
                 "💡 HƯỚNG DẪN:\n" +
                 "1. Đảm bảo app Shizuku đang chạy.\n" +
                 "2. Nhấn 'KẾT NỐI SHIZUKU' và cấp quyền.\n" +
-                "3. Nhấn 'ÁP DỤNG FILE VÀO GAME' để copy đè file.",
+                "3. Nhấn KIỂM TRA FILE để kiểm tra danh sách; ứng dụng không ghi đè dữ liệu game.",
                 color = Muted, fontSize = 10.sp, lineHeight = 15.sp,
                 modifier = Modifier.padding(10.dp)
             )
