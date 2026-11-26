@@ -63,6 +63,23 @@ private val Green = Color(0xFF43D99B)
 
 data class InstalledApp(val label: String, val pkg: String)
 
+/** Đường dẫn dữ liệu của các game được hỗ trợ */
+object GameDataPaths {
+    const val FREE_FIRE_TH = "com.dts.freefireth"
+    const val FREE_FIRE_VN = "com.garena.ffvn"
+
+    fun isSupported(packageName: String): Boolean =
+        packageName == FREE_FIRE_TH || packageName == FREE_FIRE_VN
+
+    fun gameFilesPath(packageName: String): String {
+        require(isSupported(packageName)) { "Package game không được hỗ trợ: $packageName" }
+        return "/Android/data/$packageName/files/"
+    }
+
+    fun contentCachePath(packageName: String): String =
+        gameFilesPath(packageName) + "contentcache/"
+}
+
 // ============================================================
 // FILE INSTALLER LOGIC
 // ============================================================
@@ -538,7 +555,7 @@ private fun GameTargetCard(
 }
 
 // ============================================================
-// GAME ASSET INSTALLER PANEL (CẬP NHẬT MỚI)
+// GAME ASSET INSTALLER PANEL
 // ============================================================
 @Composable
 fun GameAssetInstallerPanel(packageName: String, gameLabel: String, accent: Color) {
