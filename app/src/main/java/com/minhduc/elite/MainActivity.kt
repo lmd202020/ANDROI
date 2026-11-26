@@ -18,7 +18,6 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
@@ -46,7 +45,6 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.util.Locale
@@ -60,10 +58,6 @@ private val Panel2 = Color(0xFF172536)
 private val Cyan = Color(0xFF46DDF4)
 private val Muted = Color(0xFF9AAABD)
 private val Green = Color(0xFF43D99B)
-private val Amber = Color(0xFFFFC36A)
-private val Violet = Color(0xFF9C8CFF)
-private val Pink = Color(0xFFFF3F72)
-private val Danger = Color(0xFFFF647C)
 
 data class InstalledApp(val label: String, val pkg: String)
 
@@ -84,7 +78,7 @@ class MainActivity : ComponentActivity() {
                 )
             ) {
                 LicenseGate { licenseManager ->
-                    RobotApp(
+                    EliteApp(
                         manufacturer = Build.MANUFACTURER,
                         model = Build.MODEL,
                         androidVersion = Build.VERSION.RELEASE,
@@ -142,196 +136,107 @@ class MainActivity : ComponentActivity() {
 }
 
 // ============================================================
-// MODULE DEFINITIONS
-// ============================================================
-private data class ModuleInfo(
-    val code: String,
-    val title: String,
-    val subtitle: String,
-    val icon: ImageVector,
-    val accent: Color
-)
-
-private val MODULES = listOf(
-    ModuleInfo("M01", "COMMAND", "Tổng quan", Icons.Default.Dashboard, Cyan),
-    ModuleInfo("M02", "GAMES", "Chạy game", Icons.Default.SportsEsports, Green),
-    ModuleInfo("M03", "XML", "Nạp profile", Icons.Default.Code, Violet),
-    ModuleInfo("M04", "SERVICE", "Gói & hỗ trợ", Icons.Default.Build, Amber)
-)
-
-// ============================================================
-// ROOT APP
+// APP UI
 // ============================================================
 @Composable
-private fun RobotApp(
+private fun EliteApp(
     manufacturer: String, model: String, androidVersion: String, api: Int, refreshRate: Float,
-    apps: List<InstalledApp>, store: ProfileStore, licenseManager: LicenseManager,
-    openDisplay: () -> Unit, openAccessibility: () -> Unit, launchApp: (String) -> Unit,
+    apps: List<InstalledApp>, store: ProfileStore, licenseManager: LicenseManager, openDisplay: () -> Unit,
+    openAccessibility: () -> Unit, launchApp: (String) -> Unit,
     canDrawOverlay: () -> Boolean, requestOverlayPermission: () -> Unit,
     startCrosshair: (String, Int, Float, Boolean, Boolean, Boolean) -> Unit, stopCrosshair: () -> Unit
 ) {
     var tab by remember { mutableStateOf(0) }
-    var status by remember { mutableStateOf("Robot đã khởi động • chưa thay đổi hệ thống") }
-    var isBusy by remember { mutableStateOf(false) }
+    var selected by remember(apps) {
+        mutableStateOf(apps.firstOrNull { it.pkg == "com.dts.freefireth" }
+            ?: apps.firstOrNull { it.pkg == "com.garena.ffvn" })
+    }
+    var preset by remember { mutableStateOf("BALANCED") }
+    var sensitivity by remember { mutableFloatStateOf(.85f) }
+    var smoothness by remember { mutableFloatStateOf(.90f) }
+    var status by remember { mutableStateOf("READY • Chưa thay đổi thiết lập hệ thống.") }
     var profiles by remember { mutableStateOf(store.all()) }
     val context = LocalContext.current
 
-    val xmlImport = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocument()
-    ) { uri ->
-        uri ?: return@rememberLauncherForActivityResult
-        isBusy = true
-        runCatching {
+    val xmlImport = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) runCatching {
             context.contentResolver.openInputStream(uri).use { input ->
                 requireNotNull(input)
                 val report = EliteXml.import(input)
                 report.imported.forEach(store::save)
                 profiles = store.all()
-                status = "✅ Đã nạp ${report.imported.size} profile" +
-                    if (report.skipped.isNotEmpty()) " • bỏ qua ${report.skipped.size}" else ""
+                status = "📥 ${report.summary}" +
+                    if (report.skipped.isNotEmpty())
+                        "\n⚠️ ${report.skipped.take(2).joinToString("; ")}" +
+                            (if (report.skipped.size > 2) "…" else "")
+                    else ""
             }
-        }.onFailure { status = "❌ Lỗi nạp XML: ${it.message}" }
-        isBusy = false
+        }.onFailure { e ->
+            status = "❌ Import lỗi: ${e.message ?: "XML không hợp lệ"}"
+        }
     }
-
-    val xmlExport = rememberLauncherForActivityResult(
-        ActivityResultContracts.CreateDocument("application/xml")
-    ) { uri ->
-        uri ?: return@rememberLauncherForActivityResult
-        isBusy = true
-        runCatching {
-            context.contentResolver.openOutputStream(uri).use {
-                requireNotNull(it); EliteXml.export(profiles, it)
+    val xmlExport = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/xml")) { uri ->
+        if (uri != null) runCatching {
+            context.contentResolver.openOutputStream(uri).use { output ->
+                requireNotNull(output)
+                EliteXml.export(profiles, output)
             }
-            status = "✅ Đã xuất ${profiles.size} profile ra XML"
-        }.onFailure { status = "❌ Không thể xuất XML" }
-        isBusy = false
+            status = "Đã xuất ${profiles.size} profile XML."
+        }.onFailure { status = "Không thể xuất XML." }
     }
 
     Column(Modifier.fillMaxSize().background(Bg)) {
-
-        // ── Brand bar gọn ──────────────────────────────
         Row(
-            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+            Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Image(painterResource(R.drawable.app_logo), null, Modifier.size(38.dp))
-            Spacer(Modifier.width(10.dp))
+            Image(painterResource(R.drawable.app_logo), null, Modifier.size(42.dp))
+            Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
-                Text(
-                    "MINHDUC ROBOT", color = Cyan, fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold, letterSpacing = 2.sp
-                )
-                Text(
-                    "ELITE 4.4 • FUNCTIONAL", color = Color.White,
-                    fontSize = 16.sp, fontWeight = FontWeight.Black
-                )
+                Text("MINHDUC", color = Cyan, fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 2.sp)
+                Text("ANDROID ELITE 4.4", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Black)
             }
             Surface(color = Color(0xFF103D36), shape = RoundedCornerShape(30.dp)) {
-                Text(
-                    "NO ROOT", color = Green, fontSize = 9.sp,
-                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
-                    fontWeight = FontWeight.Bold
-                )
+                Text("NO ROOT", color = Green, fontSize = 10.sp,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp))
             }
         }
-
-        // ── Robot status bar ───────────────────────────
-        RobotHeader(isBusy, status) { status = "Đã làm mới trạng thái" }
-
-        // ── Module selector ────────────────────────────
-        ModuleSelector(tab) { tab = it }
-        Spacer(Modifier.height(4.dp))
         HorizontalDivider(color = Color(0xFF1E3041))
-
-        // ── Nội dung module ────────────────────────────
         Box(Modifier.weight(1f)) {
             when (tab) {
-                0 -> CommandCenter(
-                    manufacturer, model, androidVersion, api, refreshRate,
-                    profiles.size, licenseManager, openDisplay
-                )
-                1 -> GameLauncher(apps, launchApp, context) { status = it }
-                2 -> XmlInstaller(
+                0 -> Dashboard(manufacturer, model, androidVersion, api, refreshRate, profiles.size,
+                    status, openDisplay, licenseManager)
+                1 -> GameManager(apps = apps, launchApp = launchApp)
+                2 -> XmlManager(
                     profiles,
                     onImport = { xmlImport.launch(arrayOf("application/xml", "text/xml", "text/*")) },
-                    onExport = { xmlExport.launch("MINHDUC_ELITE_4.4.xml") },
-                    onDelete = { store.delete(it); profiles = store.all(); status = "Đã xóa profile $it" }
+                    onExport = { xmlExport.launch("MINHDUC_ELITE_4.2.xml") },
+                    onDelete = { store.delete(it); profiles = store.all(); status = "Đã xóa profile." }
                 )
-                else -> ServiceDesk(
-                    manufacturer, model, androidVersion, api,
-                    openDisplay, openAccessibility,
-                    canDrawOverlay, requestOverlayPermission,
-                    startCrosshair, stopCrosshair
-                ) { status = it }
+                else -> SettingsScreen(manufacturer, model, androidVersion, api, openDisplay, openAccessibility)
             }
         }
-    }
-}
-
-// ============================================================
-// HEADER / NAVIGATION
-// ============================================================
-@Composable
-private fun RobotHeader(isBusy: Boolean, statusText: String, onRefresh: () -> Unit) {
-    Surface(
-        color = Panel, shape = RoundedCornerShape(16.dp),
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp)
-    ) {
-        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            val ledColor by animateColorAsState(
-                if (isBusy) Amber else Green, label = "led"
-            )
-            Box(Modifier.size(10.dp).background(ledColor, RoundedCornerShape(50)))
-            Spacer(Modifier.width(10.dp))
-            Column(Modifier.weight(1f)) {
-                Text(
-                    if (isBusy) "ROBOT ĐANG XỬ LÝ…" else "ROBOT SẴN SÀNG",
-                    color = ledColor, fontSize = 11.sp, fontWeight = FontWeight.Black,
-                    letterSpacing = 1.sp
+        NavigationBar(containerColor = Color(0xFF0D1621), contentColor = Muted) {
+            listOf("HOME", "GAMES", "XML", "SETTINGS").forEachIndexed { i, label ->
+                NavigationBarItem(
+                    selected = tab == i, onClick = { tab = i },
+                    icon = {
+                        Icon(
+                            listOf(
+                                Icons.Default.Home,
+                                Icons.Default.SportsEsports,
+                                Icons.Default.Code,
+                                Icons.Default.Settings
+                            )[i], null
+                        )
+                    },
+                    label = { Text(label, fontSize = 10.sp) },
+                    colors = NavigationBarItemDefaults.colors(
+                        selectedIconColor = Cyan, selectedTextColor = Cyan,
+                        indicatorColor = Color(0xFF173748),
+                        unselectedIconColor = Muted, unselectedTextColor = Muted
+                    )
                 )
-                Text(statusText, color = Muted, fontSize = 10.sp, maxLines = 2)
-            }
-            IconButton(onClick = onRefresh) {
-                Icon(Icons.Default.Refresh, "Làm mới", tint = Cyan)
-            }
-        }
-    }
-}
-
-@Composable
-private fun ModuleSelector(selected: Int, onSelect: (Int) -> Unit) {
-    Row(
-        Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        MODULES.forEachIndexed { i, m ->
-            val active = selected == i
-            Surface(
-                color = if (active) m.accent.copy(alpha = 0.18f) else Panel,
-                shape = RoundedCornerShape(12.dp),
-                border = BorderStroke(1.dp, if (active) m.accent else Color(0xFF263A4D)),
-                modifier = Modifier.weight(1f).clickable { onSelect(i) }
-            ) {
-                Column(
-                    Modifier.padding(vertical = 10.dp, horizontal = 6.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Icon(
-                        m.icon, null,
-                        tint = if (active) m.accent else Muted,
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        m.code, color = if (active) m.accent else Muted,
-                        fontSize = 9.sp, fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        m.title, color = if (active) Color.White else Muted,
-                        fontSize = 10.sp, fontWeight = FontWeight.SemiBold
-                    )
-                }
             }
         }
     }
@@ -351,9 +256,9 @@ private fun ScreenColumn(content: @Composable ColumnScope.() -> Unit) {
 @Composable
 private fun Heading(kicker: String, title: String, subtitle: String) {
     Text(kicker, color = Cyan, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
-    Text(title, color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Black)
+    Text(title, color = Color.White, fontSize = 25.sp, fontWeight = FontWeight.Black)
     Text(subtitle, color = Muted, fontSize = 12.sp)
-    Spacer(Modifier.height(16.dp))
+    Spacer(Modifier.height(18.dp))
 }
 
 @Composable
@@ -368,371 +273,243 @@ private fun Section(title: String) {
 
 @Composable
 private fun InfoCard(title: String, value: String, icon: ImageVector) {
-    Surface(color = Panel, shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth()) {
-        Row(Modifier.padding(13.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(icon, null, tint = Cyan, modifier = Modifier.size(22.dp))
+    Surface(color = Panel, shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
+        Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(icon, null, tint = Cyan, modifier = Modifier.size(24.dp))
             Spacer(Modifier.width(12.dp))
             Column {
                 Text(title, color = Muted, fontSize = 11.sp)
-                Text(value, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Text(value, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
             }
         }
+    }
+}
+
+@Composable
+private fun LabeledSlider(
+    label: String, value: Float, onValueChange: (Float) -> Unit, range: ClosedFloatingPointRange<Float>
+) {
+    Column {
+        Text(label, color = Muted, fontSize = 11.sp)
+        Slider(value = value, onValueChange = onValueChange, valueRange = range)
+    }
+}
+
+// ============================================================
+// DASHBOARD
+// ============================================================
+@Composable
+private fun Dashboard(
+    maker: String, model: String, android: String, api: Int, hz: Float, count: Int,
+    status: String, openDisplay: () -> Unit, licenseManager: LicenseManager
+) {
+    ScreenColumn {
+        Heading("MULTI-DEVICE CONTROL", "Command Center",
+            "Profile manager • XML tools • device information")
+        Surface(color = Panel, shape = RoundedCornerShape(20.dp), modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(18.dp)) {
+                Text("SYSTEM STATUS", color = Muted, fontSize = 11.sp, letterSpacing = 1.sp)
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.size(9.dp).background(Green, RoundedCornerShape(50)))
+                    Spacer(Modifier.width(8.dp))
+                    Text("READY", color = Green, fontWeight = FontWeight.Bold, fontSize = 21.sp)
+                    Spacer(Modifier.weight(1f))
+                    Text("ELITE 4.4", color = Cyan, fontSize = 11.sp)
+                }
+                Spacer(Modifier.height(8.dp))
+                Text(status, color = Muted, fontSize = 12.sp)
+            }
+        }
+        Spacer(Modifier.height(16.dp))
+        Section("LICENSE INFORMATION")
+        Surface(color = Panel, shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("KEY STATUS", color = Muted, fontSize = 11.sp, modifier = Modifier.weight(1f))
+                    Text("ACTIVE", color = Green, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                }
+                InfoCard("License KEY", licenseManager.maskedKey(), Icons.Default.VpnKey)
+                InfoCard("Expiration",
+                    licenseManager.savedExpiration() ?: "Không giới hạn / chưa có dữ liệu",
+                    Icons.Default.Event)
+                InfoCard("Verification", licenseManager.lastMessage(), Icons.Default.VerifiedUser)
+            }
+        }
+        Spacer(Modifier.height(16.dp))
+        Section("DEVICE INFORMATION")
+        InfoCard("Device name", "$maker $model", Icons.Default.PhoneAndroid)
+        InfoCard("Device ID", licenseManager.deviceIdentifier(), Icons.Default.Fingerprint)
+        InfoCard("Android version", "$android • API $api", Icons.Default.Android)
+        InfoCard("Manufacturer", maker, Icons.Default.Business)
+        Spacer(Modifier.height(16.dp))
+        Section("DEVICE ANALYZER")
+        InfoCard("Manufacturer / Model", "$maker • $model", Icons.Default.PhoneAndroid)
+        Spacer(Modifier.height(8.dp))
+        InfoCard("Android Version", "$android • API $api", Icons.Default.Android)
+        Spacer(Modifier.height(8.dp))
+        InfoCard("Display Refresh Rate", "${"%.1f".format(hz)} Hz (reported by system)", Icons.Default.Monitor)
+        Spacer(Modifier.height(16.dp))
+        Section("LOCAL PROFILE LIBRARY")
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            MetricCard("SAVED PROFILES", count.toString(), Modifier.weight(1f))
+            MetricCard("ROOT REQUIRED", "NO", Modifier.weight(1f))
+        }
+        Spacer(Modifier.height(16.dp))
+        Button(
+            onClick = openDisplay,
+            modifier = Modifier.fillMaxWidth(),
+            colors = ButtonDefaults.buttonColors(containerColor = Panel2)
+        ) {
+            Icon(Icons.Default.DisplaySettings, null)
+            Spacer(Modifier.width(8.dp))
+            Text("OPEN DISPLAY SETTINGS")
+        }
+        Text("Profile values are stored locally. They do not modify Free Fire or another app's internal behavior.",
+            color = Muted, fontSize = 11.sp)
     }
 }
 
 @Composable
 private fun MetricCard(title: String, value: String, modifier: Modifier = Modifier) {
-    Surface(modifier, color = Panel, shape = RoundedCornerShape(14.dp)) {
-        Column(Modifier.padding(12.dp)) {
-            Text(title, color = Muted, fontSize = 10.sp, letterSpacing = 0.5.sp)
-            Text(value, color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-        }
-    }
-}
-
-@Composable
-private fun ActionCard(
-    icon: ImageVector,
-    title: String,
-    description: String,
-    accent: Color,
-    enabled: Boolean = true,
-    onClick: () -> Unit
-) {
-    Surface(
-        color = if (enabled) Panel else Panel.copy(alpha = 0.5f),
-        shape = RoundedCornerShape(14.dp),
-        border = BorderStroke(1.dp, accent.copy(alpha = if (enabled) 0.7f else 0.2f)),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Row(
-            Modifier.clickable(enabled = enabled, onClick = onClick).padding(14.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Surface(
-                color = accent.copy(alpha = 0.15f), shape = RoundedCornerShape(10.dp),
-                modifier = Modifier.size(40.dp)
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Icon(icon, null, tint = accent, modifier = Modifier.size(22.dp))
-                }
-            }
-            Spacer(Modifier.width(12.dp))
-            Column(Modifier.weight(1f)) {
-                Text(
-                    title, color = if (enabled) Color.White else Muted,
-                    fontSize = 13.sp, fontWeight = FontWeight.Bold
-                )
-                Text(description, color = Muted, fontSize = 10.sp, lineHeight = 14.sp)
-            }
-            Icon(
-                Icons.Default.ChevronRight, null,
-                tint = if (enabled) accent else Muted.copy(alpha = 0.3f)
-            )
+    Surface(modifier, color = Panel, shape = RoundedCornerShape(15.dp)) {
+        Column(Modifier.padding(14.dp)) {
+            Text(title, color = Muted, fontSize = 10.sp)
+            Text(value, color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
         }
     }
 }
 
 // ============================================================
-// MODULE M01 — COMMAND CENTER
+// GAME MANAGER (TÍCH HỢP 3 MODULE MỚI)
 // ============================================================
 @Composable
-private fun CommandCenter(
-    maker: String, model: String, android: String, api: Int, hz: Float,
-    profileCount: Int, licenseManager: LicenseManager, openDisplay: () -> Unit
-) {
+private fun GameManager(apps: List<InstalledApp>, launchApp: (String) -> Unit) {
+    var target by remember { mutableStateOf<String?>(null) }
+    val thPackage = "com.dts.freefireth"
+    val vnPackage = "com.garena.ffvn"
+    val thInstalled = apps.any { it.pkg == thPackage }
+    val vnInstalled = apps.any { it.pkg == vnPackage }
+
     ScreenColumn {
-        Heading(
-            "M01 • COMMAND CENTER", "Tổng quan Robot",
-            "Trạng thái thiết bị, license và profile đã lưu"
-        )
-
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            MetricCard("PROFILE", profileCount.toString(), Modifier.weight(1f))
-            MetricCard("REFRESH", "${"%.1f".format(hz)}Hz", Modifier.weight(1f))
-            MetricCard("ROOT", "NO", Modifier.weight(1f))
-        }
-
-        Spacer(Modifier.height(16.dp))
-        Section("TRẠNG THÁI THIẾT BỊ")
-        InfoCard("Thiết bị", "$maker $model", Icons.Default.PhoneAndroid)
-        Spacer(Modifier.height(8.dp))
-        InfoCard("Android", "$android • API $api", Icons.Default.Android)
-        Spacer(Modifier.height(8.dp))
-        InfoCard("Tần số quét", "${"%.1f".format(hz)} Hz (hệ thống báo cáo)", Icons.Default.Monitor)
-
-        Spacer(Modifier.height(16.dp))
-        Section("BẢO MẬT & LICENSE")
-        InfoCard("License", licenseManager.maskedKey(), Icons.Default.VpnKey)
-        Spacer(Modifier.height(8.dp))
-        InfoCard(
-            "Hạn dùng",
-            licenseManager.savedExpiration() ?: "Chưa có dữ liệu",
-            Icons.Default.Event
-        )
-        Spacer(Modifier.height(8.dp))
-        InfoCard("Xác thực", licenseManager.lastMessage(), Icons.Default.VerifiedUser)
-        Spacer(Modifier.height(8.dp))
-        InfoCard("Device ID", licenseManager.deviceIdentifier(), Icons.Default.Fingerprint)
-
-        Spacer(Modifier.height(16.dp))
-        Section("HÀNH ĐỘNG NHANH")
-        ActionCard(
-            Icons.Default.DisplaySettings, "Mở cài đặt hiển thị",
-            "Điều chỉnh tần số quét & độ phân giải trong Settings hệ thống",
-            Cyan, onClick = openDisplay
-        )
-
-        Spacer(Modifier.height(14.dp))
-        Text(
-            "Profile được lưu cục bộ. Không can thiệp dữ liệu bên trong Free Fire " +
-            "hoặc bất kỳ ứng dụng khác.",
-            color = Muted, fontSize = 11.sp, lineHeight = 16.sp
-        )
-    }
-}
-
-// ============================================================
-// MODULE M02 — GAME SELECTOR
-// ============================================================
-@Composable
-private fun GameLauncher(
-    apps: List<InstalledApp>,
-    launchApp: (String) -> Unit,
-    context: Context,
-    onStatus: (String) -> Unit
-) {
-    val thPkg = "com.dts.freefireth"
-    val vnPkg = "com.garena.ffvn"
-    var selectedPackage by remember { mutableStateOf<String?>(null) }
-
-    val selected = selectedPackage
-    if (selected == null) {
-        ScreenColumn {
-            Heading(
-                "M02 • GAME CENTER", "Chọn phiên bản game",
-                "Chọn Free Fire TH hoặc Free Fire VN để mở chức năng riêng"
-            )
-            GameChoiceCard(
-                title = "FREE FIRE TH",
-                packageName = thPkg,
-                installed = apps.any { it.pkg == thPkg },
-                accent = Cyan,
-                onClick = { selectedPackage = thPkg }
-            )
+        if (target == null) {
+            Heading("GAME ASSET INSTALLER", "Chọn phiên bản game",
+                "Mỗi phiên bản chỉ có một chức năng: ÁP DỤNG FILE")
+            GameTargetCard("FREE FIRE TH", thPackage, thInstalled, false, Cyan,
+                onClick = { target = thPackage })
             Spacer(Modifier.height(12.dp))
-            GameChoiceCard(
-                title = "FREE FIRE VN",
-                packageName = vnPkg,
-                installed = apps.any { it.pkg == vnPkg },
-                accent = Pink,
-                onClick = { selectedPackage = vnPkg }
+            GameTargetCard("FREE FIRE VN", vnPackage, vnInstalled, false, Color(0xFFFF3F72),
+                onClick = { target = vnPackage })
+            Spacer(Modifier.height(12.dp))
+            Text(
+                "Hãy đặt file của bạn trong thư mục game_payload theo hướng dẫn trong mã nguồn, " +
+                    "sau đó build APK và nhấn ÁP DỤNG FILE.",
+                color = Muted, fontSize = 11.sp
             )
-        }
-    } else {
-        val isTh = selected == thPkg
-        val title = if (isTh) "FREE FIRE TH" else "FREE FIRE VN"
-        val accent = if (isTh) Cyan else Pink
-        val installed = apps.any { it.pkg == selected }
-
-        ScreenColumn {
-            OutlinedButton(
-                onClick = { selectedPackage = null },
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = accent)
-            ) {
-                Icon(Icons.Default.ArrowBack, contentDescription = null)
-                Spacer(Modifier.width(6.dp))
-                Text("QUAY LẠI DANH SÁCH")
+        } else {
+            val pkg = target!!
+            val label = if (pkg == thPackage) "FREE FIRE TH" else "FREE FIRE VN"
+            val accent = if (pkg == thPackage) Cyan else Color(0xFFFF3F72)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = { target = null }) {
+                    Icon(Icons.Default.ArrowBack, null)
+                    Text("GAMES")
+                }
+                Spacer(Modifier.weight(1f))
+                Text(label, color = accent, fontWeight = FontWeight.Black)
             }
-
-            Heading("GAME CENTER • ${if (isTh) "TH" else "VN"}", title,
-                "Quản lý kết nối và mở phiên bản game đã chọn")
-
-            Surface(
-                color = Panel,
-                shape = RoundedCornerShape(18.dp),
-                border = BorderStroke(1.dp, accent.copy(alpha = .65f)),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(
-                    Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
+            Heading("ONE-TAP FILE INSTALLER", label, "Áp dụng bộ file đã đóng gói vào dữ liệu game")
+            if (apps.any { it.pkg == pkg }) {
+                Button(
+                    onClick = { launchApp(pkg) },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(containerColor = accent, contentColor = Color(0xFF06111A))
                 ) {
-                    Text(title, color = Color.White, fontSize = 19.sp,
-                        fontWeight = FontWeight.Black)
-                    Text("Package ID: $selected", color = Cyan, fontSize = 11.sp)
-                    Text(
-                        if (installed) "● ĐÃ CÀI ĐẶT" else "○ CHƯA CÀI ĐẶT",
-                        color = if (installed) Green else Amber,
-                        fontSize = 10.sp, fontWeight = FontWeight.Bold
-                    )
-
-                    Button(
-                        onClick = {
-                            val intent = context.packageManager.getLaunchIntentForPackage(selected)
-                            if (intent != null) {
-                                context.startActivity(intent)
-                                onStatus("Đang mở $title…")
-                            } else {
-                                onStatus("$title chưa được cài đặt.")
-                            }
-                        },
-                        enabled = installed,
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = accent,
-                            contentColor = Color(0xFF06111A)
-                        )
-                    ) {
-                        Icon(Icons.Default.PlayArrow, contentDescription = null)
-                        Spacer(Modifier.width(8.dp))
-                        Text("VÀO GAME", fontWeight = FontWeight.Bold)
-                    }
-
-                    OutlinedButton(
-                        onClick = {
-                            when {
-                                !ShizukuPerformance.isServiceRunning() -> {
-                                    onStatus("Shizuku chưa chạy. Hãy khởi động Shizuku trước.")
-                                }
-                                !ShizukuPerformance.hasPermission() -> {
-                                    runCatching { ShizukuPerformance.requestPermission() }
-                                        .onSuccess {
-                                            onStatus("Đã gửi yêu cầu quyền Shizuku. Cấp quyền rồi nhấn KẾT NỐI lại.")
-                                        }
-                                        .onFailure {
-                                            onStatus("Không thể yêu cầu quyền Shizuku: ${it.message}")
-                                        }
-                                }
-                                else -> {
-                                    ShizukuPerformance.connect(context) { ok, message ->
-                                        onStatus(message)
-                                    }
-                                }
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = accent)
-                    ) {
-                        Icon(Icons.Default.Link, contentDescription = null)
-                        Spacer(Modifier.width(8.dp))
-                        Text("KẾT NỐI SHIZUKU", fontWeight = FontWeight.Bold)
-                    }
-
-                    Text(
-                        when {
-                            !ShizukuPerformance.isServiceRunning() ->
-                                "Shizuku: chưa chạy"
-                            !ShizukuPerformance.hasPermission() ->
-                                "Shizuku: chưa cấp quyền cho MINHDUC"
-                            ShizukuPerformance.isUserServiceConnected() ->
-                                "Shizuku: đã kết nối"
-                            else -> "Shizuku: đã cấp quyền, chưa kết nối UserService"
-                        },
-                        color = if (ShizukuPerformance.isUserServiceConnected()) Green else Amber,
-                        fontSize = 11.sp
-                    )
-
-                    HorizontalDivider(color = Color(0xFF26394A))
-                    Text("QUẢN LÝ TỆP", color = accent,
-                        fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                    Text(
-                        "Có thể kiểm tra đường dẫn và sao lưu/khôi phục tệp thông thường. " +
-                            "Chức năng ghi tài nguyên can thiệp game không được cung cấp.",
-                        color = Muted, fontSize = 11.sp, lineHeight = 16.sp
-                    )
+                    Icon(Icons.Default.PlayArrow, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("VÀO GAME", fontWeight = FontWeight.Bold)
+                }
+            } else {
+                OutlinedButton(onClick = {}, enabled = false, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Default.Warning, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("CHƯA CÀI ĐẶT GAME")
                 }
             }
+            Spacer(Modifier.height(10.dp))
+            GameAssetInstallerPanel(packageName = pkg, gameLabel = label, accent = accent)
         }
     }
 }
 
 @Composable
-private fun GameChoiceCard(
-    title: String,
-    packageName: String,
-    installed: Boolean,
-    accent: Color,
-    onClick: () -> Unit
+private fun GameTargetCard(
+    title: String, packageName: String, installed: Boolean,
+    selected: Boolean, accent: Color, onClick: () -> Unit
 ) {
     Surface(
         color = Panel,
         shape = RoundedCornerShape(18.dp),
-        border = BorderStroke(1.dp, accent.copy(alpha = .55f)),
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)
+        border = BorderStroke(if (selected) 2.dp else 1.dp,
+            accent.copy(alpha = if (selected) 1f else .45f)),
+        modifier = Modifier.fillMaxWidth()
     ) {
-        Row(
-            Modifier.fillMaxWidth().padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Surface(
-                color = accent.copy(alpha = .14f),
-                shape = RoundedCornerShape(14.dp),
-                modifier = Modifier.size(54.dp)
-            ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+          Row(Modifier.fillMaxWidth().clickable(onClick = onClick), verticalAlignment = Alignment.CenterVertically) {
+            Surface(color = accent.copy(alpha = .14f), shape = RoundedCornerShape(14.dp),
+                modifier = Modifier.size(54.dp)) {
                 Box(contentAlignment = Alignment.Center) {
-                    Image(
-                        painterResource(R.drawable.ff_avatar),
-                        contentDescription = title,
-                        modifier = Modifier.size(44.dp)
-                    )
+                    Image(painterResource(R.drawable.ff_avatar), contentDescription = title,
+                        modifier = Modifier.size(46.dp))
                 }
             }
-            Spacer(Modifier.width(12.dp))
+            Spacer(Modifier.width(14.dp))
             Column(Modifier.weight(1f)) {
-                Text(title, color = Color.White,
-                    fontWeight = FontWeight.Black, fontSize = 17.sp)
-                Text(packageName, color = Cyan, fontSize = 10.sp)
-                Text(
-                    if (installed) "● ĐÃ CÀI ĐẶT" else "○ CHƯA CÀI ĐẶT",
-                    color = if (installed) Green else Amber,
-                    fontSize = 9.sp, fontWeight = FontWeight.Bold
-                )
+                Text(title, color = Color.White, fontWeight = FontWeight.Black, fontSize = 18.sp)
+                Text(packageName, color = Cyan, fontSize = 11.sp)
+                Text(if (installed) "● ĐÃ CÀI ĐẶT  •  SẴN SÀNG" else "○ CHƯA CÀI ĐẶT",
+                    color = if (installed) Green else Color(0xFFFFB45E), fontSize = 9.sp,
+                    fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(5.dp))
+                Text("MỞ BẢNG ĐIỀU KHIỂN  →", color = accent, fontSize = 9.sp, fontWeight = FontWeight.Bold)
             }
-            Icon(Icons.Default.ChevronRight, null, tint = accent,
-                modifier = Modifier.size(28.dp))
+            Icon(Icons.Default.ChevronRight, null, tint = accent, modifier = Modifier.size(30.dp))
+          }
         }
     }
 }
 
-// MODULE M03 — XML INSTALLER
+// ============================================================
+// XML MANAGER
 // ============================================================
 @Composable
-private fun XmlInstaller(
-    profiles: List<GameProfile>,
-    onImport: () -> Unit, onExport: () -> Unit, onDelete: (String) -> Unit
+private fun XmlManager(
+    profiles: List<GameProfile>, onImport: () -> Unit, onExport: () -> Unit, onDelete: (String) -> Unit
 ) {
     ScreenColumn {
-        Heading(
-            "M03 • XML INSTALLER", "Nạp / xuất Profile",
-            "Quản lý file cấu hình XML MINHDUC"
-        )
-
-        ActionCard(
-            Icons.Default.FileOpen, "NẠP FILE XML",
-            "Chọn file .xml từ máy, robot sẽ đọc & lưu profile",
-            Violet, onClick = onImport
-        )
-        Spacer(Modifier.height(10.dp))
-        ActionCard(
-            Icons.Default.FileDownload, "XUẤT PROFILE XML",
-            "Ghi toàn bộ profile đã lưu ra file XML",
-            Cyan, onClick = onExport
-        )
-
-        Spacer(Modifier.height(16.dp))
-        Section("DANH SÁCH PROFILE (${profiles.size})")
-
-        if (profiles.isEmpty()) {
-            Surface(color = Panel, shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth()) {
-                Text(
-                    "Chưa có profile nào. Hãy nạp file XML để bắt đầu.",
-                    color = Muted, fontSize = 12.sp, textAlign = TextAlign.Center,
-                    modifier = Modifier.padding(20.dp).fillMaxWidth()
-                )
-            }
+        Heading("CONFIGURATION FILES", "XML Manager",
+            "Import and apply supported MINHDUC XML profiles")
+        InfoCard("Profiles stored", profiles.size.toString(), Icons.Default.FolderOpen)
+        Spacer(Modifier.height(14.dp))
+        Button(onClick = onImport, modifier = Modifier.fillMaxWidth()) {
+            Icon(Icons.Default.FileOpen, null); Spacer(Modifier.width(8.dp))
+            Text("CHỌN & NẠP FILE XML")
         }
-
+        OutlinedButton(onClick = onExport, modifier = Modifier.fillMaxWidth()) {
+            Icon(Icons.Default.FileDownload, null); Spacer(Modifier.width(8.dp))
+            Text("EXPORT XML")
+        }
+        Text(
+            "Hỗ trợ XML profile MINHDUC: package, name, preset, sensitivity, smoothness. " +
+                "Chấp nhận nhiều root tag (<MINHDUC_ENGINE>, <APP>, <PROFILES>…). " +
+                "Entry lỗi sẽ bị bỏ qua thay vì fail cả file.",
+            color = Muted, fontSize = 11.sp
+        )
+        Spacer(Modifier.height(18.dp))
+        Section("SAVED PROFILES")
+        if (profiles.isEmpty())
+            Text("No profiles yet. Create one in Game Manager or import an XML file.",
+                color = Muted, fontSize = 12.sp)
         profiles.forEach { p ->
             Surface(
                 color = Panel, shape = RoundedCornerShape(14.dp),
@@ -743,77 +520,73 @@ private fun XmlInstaller(
                         Text(p.appName, color = Color.White, fontWeight = FontWeight.SemiBold)
                         Text(p.packageName, color = Muted, fontSize = 10.sp)
                         Text(
-                            "${p.preset} • Sens ${(p.sensitivity * 100).toInt()} • " +
-                                "Smooth ${(p.smoothness * 100).toInt()}",
+                            "${p.preset} • Sens ${(p.sensitivity * 100).toInt()} • Smooth ${(p.smoothness * 100).toInt()}",
                             color = Cyan, fontSize = 10.sp
                         )
                     }
                     IconButton(onClick = { onDelete(p.packageName) }) {
-                        Icon(Icons.Default.Delete, null, tint = Danger)
+                        Icon(Icons.Default.Delete, null, tint = Color(0xFFFF647C))
                     }
                 }
             }
         }
-
         Spacer(Modifier.height(10.dp))
         Text(
-            "XML chỉ là dữ liệu — parser có chống XXE, không thực thi lệnh. " +
-            "File XML lạ không thể chạy mã trong app hoặc thay đổi dữ liệu bên trong Free Fire.",
-            color = Muted, fontSize = 11.sp, lineHeight = 16.sp
+            "XML chỉ là dữ liệu — parser không thực thi bất kỳ lệnh nào, có chống XXE. " +
+                "File XML lạ không thể chạy mã trong app hoặc thay đổi dữ liệu bên trong Free Fire.",
+            color = Muted, fontSize = 11.sp
         )
     }
 }
 
 // ============================================================
-// MODULE M04 — SERVICE DESK
+// SETTINGS
 // ============================================================
 @Composable
-private fun ServiceDesk(
+private fun SettingsScreen(
     maker: String, model: String, android: String, api: Int,
-    openDisplay: () -> Unit, openAccessibility: () -> Unit,
-    canDrawOverlay: () -> Boolean, requestOverlayPermission: () -> Unit,
-    startCrosshair: (String, Int, Float, Boolean, Boolean, Boolean) -> Unit,
-    stopCrosshair: () -> Unit,
-    onStatus: (String) -> Unit
+    openDisplay: () -> Unit, openAccessibility: () -> Unit
 ) {
     val context = LocalContext.current
     val zaloUrl = "https://zalo.me/0358648824"
     val facebookUrl = "https://www.facebook.com/share/1A8hF8BzF4/?mibextid=wwXIfr"
 
     fun openLink(url: String) {
-        runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
-            .onFailure { onStatus("❌ Không mở được link") }
+        runCatching {
+            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+        }
     }
 
     ScreenColumn {
         Heading(
-            "M04 • SERVICE DESK", "Gói dịch vụ & hỗ trợ",
-            "Tư vấn ROOT • liên hệ • shortcuts hệ thống"
+            "APPLICATION PREFERENCES", "Settings",
+            "Gói dịch vụ ROOT • liên hệ tư vấn • thông tin thiết bị"
         )
 
-        Section("GÓI DỊCH VỤ")
+        Section("DANH SÁCH GÓI DỊCH VỤ")
         Text(
-            "Chọn gói phù hợp. Nhấn để liên hệ và được tư vấn chi tiết trước khi đăng ký.",
+            "Lựa chọn gói phù hợp với nhu cầu của bạn. Nhấn nút đăng ký để liên hệ và được tư vấn chi tiết trước khi sử dụng.",
             color = Muted, fontSize = 11.sp, lineHeight = 16.sp
         )
         Spacer(Modifier.height(12.dp))
 
         RootPackageCard(
             name = "ROOT CƠ BẢN", price = "150.000đ",
-            description = "Gói ROOT cơ bản cho nhu cầu thông thường.",
+            description = "Gói ROOT cơ bản dành cho nhu cầu sử dụng thông thường.",
             accent = Cyan, onRegister = { openLink(zaloUrl) }
         )
         Spacer(Modifier.height(10.dp))
         RootPackageCard(
             name = "CHỨNG CHỈ ROOT", price = "250.000đ",
-            description = "Chứng chỉ ROOT. Liên hệ để tư vấn thiết bị tương thích.",
-            accent = Violet, onRegister = { openLink(zaloUrl) }
+            description = "Gói chứng chỉ ROOT. Liên hệ để được tư vấn thiết bị và điều kiện tương thích.",
+            accent = Color(0xFF9C8CFF), onRegister = { openLink(zaloUrl) }
         )
         Spacer(Modifier.height(10.dp))
         RootPackageCard(
             name = "ROOT VIP ANDROID", price = "450.000đ",
-            description = "Gói VIP Android cho khách hàng cần trải nghiệm cao cấp.",
-            accent = Amber, onRegister = { openLink(zaloUrl) }, featured = true
+            description = "Gói VIP Android dành cho khách hàng có nhu cầu nâng cấp trải nghiệm.",
+            accent = Color(0xFFFFC36A), onRegister = { openLink(zaloUrl) },
+            featured = true
         )
 
         Spacer(Modifier.height(16.dp))
@@ -823,13 +596,11 @@ private fun ServiceDesk(
             modifier = Modifier.fillMaxWidth()
         ) {
             Column(Modifier.padding(16.dp)) {
-                Text(
-                    "CẦN GÓI CAO HƠN?", color = Cyan,
-                    fontSize = 14.sp, fontWeight = FontWeight.Black
-                )
+                Text("MUỐN NÂNG CẤP VIP HƠN?", color = Cyan,
+                    fontSize = 14.sp, fontWeight = FontWeight.Black)
                 Spacer(Modifier.height(5.dp))
                 Text(
-                    "Nhắn trực tiếp để được tư vấn riêng cho thiết bị của bạn.",
+                    "Nếu bạn cần gói cao hơn hoặc muốn hỏi về thiết bị, hãy nhắn trực tiếp để được tư vấn riêng.",
                     color = Muted, fontSize = 11.sp, lineHeight = 16.sp
                 )
                 Spacer(Modifier.height(12.dp))
@@ -837,9 +608,9 @@ private fun ServiceDesk(
                     onClick = { openLink(zaloUrl) }, modifier = Modifier.fillMaxWidth(),
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF087FE8))
                 ) {
-                    Icon(Icons.Default.Chat, null)
+                    Icon(Icons.Default.Chat, contentDescription = null)
                     Spacer(Modifier.width(8.dp))
-                    Text("ZALO • 0358648824")
+                    Text("LIÊN HỆ ZALO • 0358648824")
                 }
                 Spacer(Modifier.height(8.dp))
                 OutlinedButton(
@@ -847,53 +618,12 @@ private fun ServiceDesk(
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = Cyan),
                     border = BorderStroke(1.dp, Cyan.copy(alpha = 0.6f))
                 ) {
-                    Icon(Icons.Default.Public, null)
+                    Icon(Icons.Default.Public, contentDescription = null)
                     Spacer(Modifier.width(8.dp))
-                    Text("FACEBOOK")
+                    Text("LIÊN HỆ FACEBOOK")
                 }
             }
         }
-
-        Spacer(Modifier.height(16.dp))
-        Section("TÂM ẢO (CROSSHAIR)")
-        val hasOverlay = remember { canDrawOverlay() }
-        ActionCard(
-            Icons.Default.CenterFocusStrong,
-            if (hasOverlay) "BẬT TÂM ẢO" else "CẤP QUYỀN OVERLAY",
-            if (hasOverlay) "Khởi động dịch vụ vẽ tâm ảo trên màn hình"
-            else "Cần quyền vẽ trên ứng dụng khác để hiển thị tâm ảo",
-            Green,
-            onClick = {
-                if (hasOverlay) {
-                    startCrosshair("cross", AndroidColor.CYAN, 24f, false, true, false)
-                    onStatus("✅ Đã bật tâm ảo")
-                } else {
-                    requestOverlayPermission()
-                    onStatus("Vui lòng cấp quyền overlay, sau đó quay lại")
-                }
-            }
-        )
-        Spacer(Modifier.height(8.dp))
-        ActionCard(
-            Icons.Default.StopCircle, "TẮT TÂM ẢO",
-            "Dừng dịch vụ overlay đang chạy",
-            Danger,
-            onClick = { stopCrosshair(); onStatus("Đã tắt tâm ảo") }
-        )
-
-        Spacer(Modifier.height(16.dp))
-        Section("SHORTCUTS HỆ THỐNG")
-        ActionCard(
-            Icons.Default.DisplaySettings, "Mở Display Settings",
-            "Điều chỉnh hiển thị, tần số quét",
-            Cyan, onClick = openDisplay
-        )
-        Spacer(Modifier.height(8.dp))
-        ActionCard(
-            Icons.Default.Accessibility, "Mở Accessibility Settings",
-            "Quản lý trợ năng và dịch vụ hệ thống",
-            Violet, onClick = openAccessibility
-        )
 
         Spacer(Modifier.height(16.dp))
         Section("THÔNG TIN THIẾT BỊ")
@@ -902,14 +632,35 @@ private fun ServiceDesk(
         InfoCard("Android", "$android • API $api", Icons.Default.Android)
 
         Spacer(Modifier.height(16.dp))
-        Section("VỀ ỨNG DỤNG")
+        Section("SYSTEM SHORTCUTS")
+        Button(
+            onClick = openDisplay, modifier = Modifier.fillMaxWidth(),
+            colors = ButtonDefaults.buttonColors(containerColor = Panel2)
+        ) {
+            Icon(Icons.Default.DisplaySettings, null)
+            Spacer(Modifier.width(8.dp))
+            Text("OPEN DISPLAY SETTINGS")
+        }
+        Spacer(Modifier.height(8.dp))
+        Button(
+            onClick = openAccessibility, modifier = Modifier.fillMaxWidth(),
+            colors = ButtonDefaults.buttonColors(containerColor = Panel2)
+        ) {
+            Icon(Icons.Default.Accessibility, null)
+            Spacer(Modifier.width(8.dp))
+            Text("OPEN ACCESSIBILITY SETTINGS")
+        }
+
+        Spacer(Modifier.height(16.dp))
+        Section("ABOUT")
         Text(
-            "MINHDUC ANDROID ELITE 4.4 — robot quản lý profile, XML và overlay tâm ảo. " +
-            "Các gói dịch vụ cần được tư vấn tương thích theo từng thiết bị trước khi đăng ký.",
+            "MINHDUC ANDROID ELITE 4.4 — công cụ quản lý profile, XML và overlay tâm ảo. " +
+                "Các gói dịch vụ được giới thiệu ở trên cần được tư vấn về khả năng tương thích " +
+                "với từng thiết bị trước khi đăng ký.",
             color = Muted, fontSize = 11.sp, lineHeight = 16.sp
         )
         Spacer(Modifier.height(8.dp))
-        InfoCard("Version", "4.4 • Elite Build", Icons.Default.Info)
+        InfoCard("Version", "4.2 • Elite Build", Icons.Default.Info)
         Spacer(Modifier.height(8.dp))
         InfoCard("Terms", "Use at your own risk", Icons.Default.Warning)
     }
@@ -947,7 +698,7 @@ private fun RootPackageCard(
                 onClick = onRegister, modifier = Modifier.fillMaxWidth(),
                 colors = ButtonDefaults.buttonColors(containerColor = accent)
             ) {
-                Icon(Icons.Default.Chat, null)
+                Icon(Icons.Default.Chat, contentDescription = null)
                 Spacer(Modifier.width(7.dp))
                 Text("ĐĂNG KÝ / TƯ VẤN", color = Color(0xFF07111A))
             }
