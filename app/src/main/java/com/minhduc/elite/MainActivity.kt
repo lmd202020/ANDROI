@@ -68,9 +68,10 @@ object GameDataPaths {
     fun isSupported(packageName: String): Boolean =
         packageName == FREE_FIRE_TH || packageName == FREE_FIRE_VN
 
+    // Đã sửa: Thêm /storage/emulated/0 để trỏ đúng vào bộ nhớ trong, tránh lỗi Read-only
     fun gameFilesPath(packageName: String): String {
         require(isSupported(packageName)) { "Package game không được hỗ trợ: $packageName" }
-        return "/Android/data/$packageName/files/"
+        return "/storage/emulated/0/Android/data/$packageName/files/"
     }
 
     fun contentCachePath(packageName: String): String =
@@ -139,7 +140,7 @@ object FileInstaller {
             append("mkdir -p '$targetDir'\n")
             append("cp -f '$tmpPath'/* '$targetDir' 2>/dev/null || true\n")
             append("chmod -R 771 '$targetDir' 2>/dev/null || true\n")
-            append("chown -R $(stat -c '%u:%g' /Android/data/$packageName) '$targetDir' 2>/dev/null || true\n")
+            append("chown -R $(stat -c '%u:%g' '/storage/emulated/0/Android/data/$packageName') '$targetDir' 2>/dev/null || true\n")
             append("ls '$targetDir'\n")
         }
 
