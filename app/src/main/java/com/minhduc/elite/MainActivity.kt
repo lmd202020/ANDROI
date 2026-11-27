@@ -34,7 +34,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import rikka.shizuku.Shizuku
-import rikka.shizuku.ShizukuRemoteProcess
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -75,27 +74,36 @@ object GameDataPaths {
 
     fun contentCachePath(packageName: String): String =
         gameFilesPath(packageName) + "contentcache/"
-        
+
     fun targetBundlePath(packageName: String): String =
         contentCachePath(packageName) + "Optional/android/gameassetbundles/"
 }
 
 // ============================================================
-// FILE INSTALLER LOGIC (DÙNG REFLECTION CHO SHIZUKU 13+)
+// FILE INSTALLER LOGIC (DÙNG SHIZUKU ĐỂ COPY FILE)
 // ============================================================
 object FileInstaller {
     const val ASSETS_BUNDLES_DIR = "game_payload/file/contentcache/Optional/android/gameassetbundles"
 
     fun getLocalAssets(context: Context): List<String> {
         return try {
-            context.assets.list(ASSETS_BUNDLES_DIR)?.toList() ?: emptyList()
+            context.assets.list(ASSETS_BUNDLES_DIR)?.toList()?.sorted() ?: emptyList()
         } catch (e: Exception) {
             emptyList()
         }
     }
 
+    /**
+     * Copy toàn bộ file từ assets/game_payload/... sang thư mục dữ liệu game
+     * thông qua Shizuku (chạy lệnh shell với quyền shell/root).
+     *
+     * Quy trình:
+     *  1. Copy assets -> /sdcard/Download/.elite_tmp/ (thư mục tạm app có thể ghi)
+     *  2. Dùng Shizuku chạy `cp` từ thư mục tạm sang /Android/data/<pkg>/files/...
+     *  3. Dọn thư mục tạm
+     */
     suspend fun applyFilesWithShizuku(context: Context, packageName: String): String = withContext(Dispatchers.IO) {
-        // Chế độ an toàn: chỉ kiểm tra assets, không ghi đè dữ liệu của game.
+        // 1) Kiểm tra package hỗ trợ
         if (!GameDataPaths.isSupported(packageName)) {
             return@withContext "❌ Package game không được hỗ trợ."
         }
@@ -103,7 +111,79 @@ object FileInstaller {
         if (files.isEmpty()) {
             return@withContext "❌ Không tìm thấy file trong assets."
         }
-        "ℹ️ Đã tìm thấy ${files.size} file. Chế độ này chỉ kiểm tra danh sách, không sửa dữ liệu game."
+
+        // 2) Kiểm tra Shizuku
+        val shizukuOk = try {
+            Shizuku.pingBinder() && Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
+        } catch (e: Exception) {
+            false
+        }
+        if (!shizukuOk) {
+            return@withContext "❌ Shizuku chưa được cấp quyền."
+        }
+
+        // 3) Copy assets ra thư mục tạm app có thể ghi
+        val tmpRoot = File(context.cacheDir, "elite_payload")
+        if (tmpRoot.exists()) tmpRoot.deleteRecursively()
+        tmpRoot.mkdirs()
+
+        try {
+            for (name in files) {
+                val outFile = File(tmpRoot, name)
+                context.assets.open("$ASSETS_BUNDLES_DIR/$name").use { input ->
+                    outFile.outputStream().use { output -> input.copyTo(output) }
+                }
+            }
+        } catch (e: Exception) {
+            return@withContext "❌ Lỗi chuẩn bị file tạm: ${e.message}"
+        }
+
+        // 4) Dùng Shizuku copy sang thư mục đích
+        val targetDir = GameDataPaths.targetBundlePath(packageName)
+        val tmpPath = tmpRoot.absolutePath
+        // Lệnh: tạo thư mục đích, đổi quyền, copy toàn bộ file vào, đổi owner về user game
+        val script = buildString {
+            append("set -e\n")
+            append("mkdir -p '$targetDir'\n")
+            append("cp -f '$tmpPath'/* '$targetDir' 2>/dev/null || true\n")
+            append("chmod -R 771 '$targetDir' 2>/dev/null || true\n")
+            append("chown -R $(stat -c '%u:%g' /Android/data/$packageName) '$targetDir' 2>/dev/null || true\n")
+            append("ls '$targetDir'\n")
+        }
+
+        val resultText = try {
+            execShell(script)
+        } catch (e: Exception) {
+            tmpRoot.deleteRecursively()
+            return@withContext "❌ Lỗi Shizuku: ${e.message}"
+        }
+
+        // 5) Dọn thư mục tạm
+        tmpRoot.deleteRecursively()
+
+        return@withContext if (resultText.contains("ERROR")) {
+            "❌ Áp dụng thất bại:\n$resultText"
+        } else {
+            "✅ Đã áp dụng ${files.size} file vào:\n$targetDir"
+        }
+    }
+
+    /** Chạy script shell qua Shizuku, trả về stdout/stderr */
+    private fun execShell(script: String): String {
+        val process = Shizuku.newProcess(arrayOf("sh", "-c", script), null, null)
+        val stdout = process.inputStream.bufferedReader().readText()
+        val stderr = process.errorStream.bufferedReader().readText()
+        val exit = process.waitFor()
+        return buildString {
+            if (stdout.isNotBlank()) append(stdout)
+            if (stderr.isNotBlank()) {
+                append("\n[stderr]\n").append(stderr)
+                append("\nERROR")
+            }
+            if (exit != 0) {
+                append("\n[exit=$exit] ERROR")
+            }
+        }.trim()
     }
 }
 
@@ -396,10 +476,10 @@ private fun GameManager(apps: List<InstalledApp>, launchApp: (String) -> Unit) {
                 Text(label, color = accent, fontWeight = FontWeight.Black)
             }
             Heading("ONE-TAP FILE INSTALLER", label, "Áp dụng bộ file đã đóng gói vào dữ liệu game")
-            
+
             GameAssetInstallerPanel(
-                packageName = pkg, 
-                gameLabel = label, 
+                packageName = pkg,
+                gameLabel = label,
                 accent = accent,
                 isGameInstalled = apps.any { it.pkg == pkg },
                 onLaunchGame = { launchApp(pkg) }
@@ -421,24 +501,24 @@ private fun GameTargetCard(
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-          Row(Modifier.fillMaxWidth().clickable(onClick = onClick), verticalAlignment = Alignment.CenterVertically) {
-            Surface(color = accent.copy(alpha = .14f), shape = RoundedCornerShape(14.dp),
-                modifier = Modifier.size(54.dp)) {
-                Box(contentAlignment = Alignment.Center) {
-                    Image(painterResource(R.drawable.ff_avatar), contentDescription = title,
-                        modifier = Modifier.size(46.dp))
+            Row(Modifier.fillMaxWidth().clickable(onClick = onClick), verticalAlignment = Alignment.CenterVertically) {
+                Surface(color = accent.copy(alpha = .14f), shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier.size(54.dp)) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Image(painterResource(R.drawable.ff_avatar), contentDescription = title,
+                            modifier = Modifier.size(46.dp))
+                    }
                 }
+                Spacer(Modifier.width(14.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(title, color = Color.White, fontWeight = FontWeight.Black, fontSize = 18.sp)
+                    Text(packageName, color = Cyan, fontSize = 11.sp)
+                    Text(if (installed) "● ĐÃ CÀI ĐẶT  •  SẴN SÀNG" else "○ CHƯA CÀI ĐẶT",
+                        color = if (installed) Green else Orange, fontSize = 9.sp,
+                        fontWeight = FontWeight.Bold)
+                }
+                Icon(Icons.Default.ChevronRight, null, tint = accent, modifier = Modifier.size(30.dp))
             }
-            Spacer(Modifier.width(14.dp))
-            Column(Modifier.weight(1f)) {
-                Text(title, color = Color.White, fontWeight = FontWeight.Black, fontSize = 18.sp)
-                Text(packageName, color = Cyan, fontSize = 11.sp)
-                Text(if (installed) "● ĐÃ CÀI ĐẶT  •  SẴN SÀNG" else "○ CHƯA CÀI ĐẶT",
-                    color = if (installed) Green else Orange, fontSize = 9.sp,
-                    fontWeight = FontWeight.Bold)
-            }
-            Icon(Icons.Default.ChevronRight, null, tint = accent, modifier = Modifier.size(30.dp))
-          }
         }
     }
 }
@@ -448,29 +528,26 @@ private fun GameTargetCard(
 // ============================================================
 @Composable
 fun GameAssetInstallerPanel(
-    packageName: String, 
-    gameLabel: String, 
+    packageName: String,
+    gameLabel: String,
     accent: Color,
     isGameInstalled: Boolean,
     onLaunchGame: () -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    
+
     val localAssets = remember { FileInstaller.getLocalAssets(context) }
     var statusMsg by remember { mutableStateOf("") }
     var isInstalling by remember { mutableStateOf(false) }
-    
+
     // Trạng thái Shizuku
     var shizukuReady by remember { mutableStateOf(false) }
 
     fun checkShizuku() {
         try {
-            if (Shizuku.pingBinder() && Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) {
-                shizukuReady = true
-            } else {
-                shizukuReady = false
-            }
+            shizukuReady = Shizuku.pingBinder() &&
+                Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
         } catch (e: Exception) {
             shizukuReady = false
         }
@@ -497,7 +574,7 @@ fun GameAssetInstallerPanel(
     ) {
         Text("GAME DATA LOCATION", color = accent, fontSize = 11.sp, fontWeight = FontWeight.Bold)
         Text(gameLabel, color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Black)
-        
+
         Text(
             "Thư mục đích:\n${GameDataPaths.targetBundlePath(packageName)}",
             color = Muted, fontSize = 10.sp, lineHeight = 14.sp
@@ -570,11 +647,11 @@ fun GameAssetInstallerPanel(
             }
         }
 
-        // NÚT ÁP DỤNG FILE
+        // ===== NÚT ÁP DỤNG FILE (thay cho KIỂM TRA FILE) =====
         Button(
             onClick = {
                 isInstalling = true
-                statusMsg = "⏳ Đang kiểm tra danh sách file..."
+                statusMsg = "⏳ Đang áp dụng file vào dữ liệu game..."
                 scope.launch {
                     val result = FileInstaller.applyFilesWithShizuku(context, packageName)
                     statusMsg = result
@@ -587,7 +664,7 @@ fun GameAssetInstallerPanel(
         ) {
             Icon(Icons.Default.InstallMobile, contentDescription = null)
             Spacer(Modifier.width(8.dp))
-            Text(if (isInstalling) "ĐANG KIỂM TRA..." else "KIỂM TRA FILE", fontWeight = FontWeight.Bold)
+            Text(if (isInstalling) "ĐANG ÁP DỤNG..." else "ÁP DỤNG FILE", fontWeight = FontWeight.Bold)
         }
 
         if (statusMsg.isNotEmpty()) {
@@ -608,7 +685,8 @@ fun GameAssetInstallerPanel(
                 "💡 HƯỚNG DẪN:\n" +
                 "1. Đảm bảo app Shizuku đang chạy.\n" +
                 "2. Nhấn 'KẾT NỐI SHIZUKU' và cấp quyền.\n" +
-                "3. Nhấn KIỂM TRA FILE để kiểm tra danh sách; ứng dụng không ghi đè dữ liệu game.",
+                "3. Nhấn ÁP DỤNG FILE để copy bộ file vào dữ liệu game.\n" +
+                "4. Mở game để áp dụng thay đổi.",
                 color = Muted, fontSize = 10.sp, lineHeight = 15.sp,
                 modifier = Modifier.padding(10.dp)
             )
@@ -672,7 +750,7 @@ private fun SettingsScreen(
 
     ScreenColumn {
         Heading("APPLICATION PREFERENCES", "Settings", "Gói dịch vụ ROOT • liên hệ tư vấn • thông tin thiết bị")
-        
+
         Section("LIÊN HỆ HỖ TRỢ")
         Button(
             onClick = { openLink(zaloUrl) }, modifier = Modifier.fillMaxWidth(),
