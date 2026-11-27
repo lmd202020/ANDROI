@@ -34,6 +34,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import rikka.shizuku.Shizuku
+import rikka.shizuku.ShizukuRemoteProcess
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -80,7 +81,7 @@ object GameDataPaths {
 }
 
 // ============================================================
-// FILE INSTALLER LOGIC (DÙNG SHIZUKU ĐỂ COPY FILE)
+// FILE INSTALLER LOGIC (DÙNG SHIZUKU + REFLECTION)
 // ============================================================
 object FileInstaller {
     const val ASSETS_BUNDLES_DIR = "game_payload/file/contentcache/Optional/android/gameassetbundles"
@@ -93,15 +94,6 @@ object FileInstaller {
         }
     }
 
-    /**
-     * Copy toàn bộ file từ assets/game_payload/... sang thư mục dữ liệu game
-     * thông qua Shizuku (chạy lệnh shell với quyền shell/root).
-     *
-     * Quy trình:
-     *  1. Copy assets -> /sdcard/Download/.elite_tmp/ (thư mục tạm app có thể ghi)
-     *  2. Dùng Shizuku chạy `cp` từ thư mục tạm sang /Android/data/<pkg>/files/...
-     *  3. Dọn thư mục tạm
-     */
     suspend fun applyFilesWithShizuku(context: Context, packageName: String): String = withContext(Dispatchers.IO) {
         // 1) Kiểm tra package hỗ trợ
         if (!GameDataPaths.isSupported(packageName)) {
@@ -141,9 +133,9 @@ object FileInstaller {
         // 4) Dùng Shizuku copy sang thư mục đích
         val targetDir = GameDataPaths.targetBundlePath(packageName)
         val tmpPath = tmpRoot.absolutePath
-        // Lệnh: tạo thư mục đích, đổi quyền, copy toàn bộ file vào, đổi owner về user game
         val script = buildString {
             append("set -e\n")
+            append("am force-stop $packageName || true\n")
             append("mkdir -p '$targetDir'\n")
             append("cp -f '$tmpPath'/* '$targetDir' 2>/dev/null || true\n")
             append("chmod -R 771 '$targetDir' 2>/dev/null || true\n")
@@ -168,9 +160,12 @@ object FileInstaller {
         }
     }
 
-    /** Chạy script shell qua Shizuku, trả về stdout/stderr */
+    /**
+     * Chạy script shell qua Shizuku, trả về stdout/stderr.
+     * Shizuku 13.x đã chuyển newProcess thành private → dùng reflection.
+     */
     private fun execShell(script: String): String {
-        val process = Shizuku.newProcess(arrayOf("sh", "-c", script), null, null)
+        val process = newShizukuProcess(arrayOf("sh", "-c", script))
         val stdout = process.inputStream.bufferedReader().readText()
         val stderr = process.errorStream.bufferedReader().readText()
         val exit = process.waitFor()
@@ -184,6 +179,35 @@ object FileInstaller {
                 append("\n[exit=$exit] ERROR")
             }
         }.trim()
+    }
+
+    /**
+     * Gọi Shizuku.newProcess thông qua reflection để tương thích cả Shizuku 12.x và 13.x.
+     */
+    private fun newShizukuProcess(cmd: Array<String>): ShizukuRemoteProcess {
+        return try {
+            // Thử gọi trực tiếp trước (Shizuku 12.x)
+            @Suppress("DEPRECATION")
+            val direct = Shizuku::class.java.getDeclaredMethod(
+                "newProcess",
+                Array<String>::class.java,
+                Array<String>::class.java,
+                String::class.java
+            )
+            direct.isAccessible = true
+            direct.invoke(null, cmd, null, null) as ShizukuRemoteProcess
+        } catch (e: Exception) {
+            // Fallback reflection qua Class.forName (Shizuku 13.x)
+            val clazz = Class.forName("rikka.shizuku.Shizuku")
+            val method = clazz.getDeclaredMethod(
+                "newProcess",
+                Array<String>::class.java,
+                Array<String>::class.java,
+                String::class.java
+            )
+            method.isAccessible = true
+            method.invoke(null, cmd, null, null) as ShizukuRemoteProcess
+        }
     }
 }
 
@@ -647,7 +671,7 @@ fun GameAssetInstallerPanel(
             }
         }
 
-        // ===== NÚT ÁP DỤNG FILE (thay cho KIỂM TRA FILE) =====
+        // ===== NÚT ÁP DỤNG FILE =====
         Button(
             onClick = {
                 isInstalling = true
